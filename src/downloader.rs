@@ -909,12 +909,16 @@ impl WebsiteMirror {
         }
 
         // Check if file exists on disk
-        if file_manager.file_exists(url) {
+        // First convert URL to the local path where it would be saved
+        let local_path = html_parser.url_to_local_path_string(url)?;
+        if file_manager.file_exists(&local_path) {
             // Add to cache for future reference
-            let local_path = html_parser.url_to_local_path_string(url)?;
             let mut cache = download_cache.lock().unwrap();
             cache.insert(url.to_string(), local_path.clone());
-            println!("⏭️  Skipping {} (already exists on disk)", url);
+            println!(
+                "⏭️  Skipping {} (already exists on disk at {})",
+                url, local_path
+            );
             return Ok(());
         }
 
@@ -979,14 +983,7 @@ impl WebsiteMirror {
             }
         };
 
-        // Save the resource
-        let local_path = match html_parser.url_to_local_path_string(url) {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("❌ Failed to convert URL to local path {}: {}", url, e);
-                return Ok(());
-            }
-        };
+        // We already have local_path from the file existence check above
 
         // Convert images to WebP if they're JPEG or PNG and the flag is enabled
         let (final_content, final_content_type, final_local_path) = if convert_to_webp
@@ -1184,12 +1181,12 @@ mod tests {
     fn test_get_local_path_for_resource_static() {
         let html_parser = HtmlParser::new("https://example.com").unwrap();
 
-        // Test normal path
+        // Test normal path - now includes domain
         let result = WebsiteMirror::get_local_path_for_resource_static(
             &html_parser,
             "https://example.com/image.jpg",
             false,
-            "index.html",
+            "example.com/index.html",
         )
         .unwrap();
         assert_eq!(result, "image.jpg");
@@ -1199,7 +1196,7 @@ mod tests {
             &html_parser,
             "https://example.com/image.jpg",
             true,
-            "index.html",
+            "example.com/index.html",
         )
         .unwrap();
         assert_eq!(result, "image.webp");
@@ -1209,7 +1206,7 @@ mod tests {
             &html_parser,
             "https://example.com/image.png",
             true,
-            "index.html",
+            "example.com/index.html",
         )
         .unwrap();
         assert_eq!(result, "image.webp");
@@ -1219,10 +1216,20 @@ mod tests {
             &html_parser,
             "https://example.com/style.css",
             true,
-            "index.html",
+            "example.com/index.html",
         )
         .unwrap();
         assert_eq!(result, "style.css");
+
+        // Test cross-domain resource
+        let result = WebsiteMirror::get_local_path_for_resource_static(
+            &html_parser,
+            "https://cdn.example.com/image.jpg",
+            false,
+            "example.com/index.html",
+        )
+        .unwrap();
+        assert_eq!(result, "../cdn.example.com/image.jpg");
     }
 
     #[test]

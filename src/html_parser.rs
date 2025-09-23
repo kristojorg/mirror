@@ -100,11 +100,21 @@ impl HtmlParser {
     }
 
     fn create_resource_link(&self, url: &str, resource_type: ResourceType) -> Result<ResourceLink> {
+        // Skip data URLs and other special schemes
+        if url.starts_with("data:")
+            || url.starts_with("javascript:")
+            || url.starts_with("mailto:")
+            || url.starts_with("tel:")
+            || url.starts_with("#")
+        {
+            return Err(anyhow::anyhow!("Special URL scheme not supported"));
+        }
+
         let absolute_url = self.resolve_url(url)?;
         let local_path = self.url_to_local_path(&absolute_url)?;
 
         Ok(ResourceLink {
-            original_url: absolute_url.to_string(),
+            original_url: url.to_string(), // Store the original URL as-is for HTML replacement
             local_path,
             resource_type,
         })
@@ -125,6 +135,8 @@ impl HtmlParser {
     }
 
     fn url_to_local_path(&self, url: &Url) -> Result<String> {
+        // Include the host (domain) in the path
+        let host = url.host_str().unwrap_or("localhost");
         let mut path = url.path().to_string();
 
         // Remove leading slash
@@ -149,10 +161,13 @@ impl HtmlParser {
             }
         }
 
-        // Sanitize the path for filesystem
-        path = self.sanitize_path(&path);
+        // Combine host and path
+        let full_path = format!("{}/{}", host, path);
 
-        Ok(path)
+        // Sanitize the path for filesystem
+        let sanitized = self.sanitize_path(&full_path);
+
+        Ok(sanitized)
     }
 
     pub fn sanitize_path(&self, path: &str) -> String {
@@ -431,14 +446,14 @@ mod tests {
         let result = parser
             .url_to_local_path_string("https://example.com/image.jpg")
             .unwrap();
-        assert_eq!(result, "image.jpg");
+        assert_eq!(result, "example.com/image.jpg");
     }
 
     #[test]
     fn test_url_to_local_path_string_relative() {
         let parser = HtmlParser::new("https://example.com").unwrap();
         let result = parser.url_to_local_path_string("/image.jpg").unwrap();
-        assert_eq!(result, "image.jpg");
+        assert_eq!(result, "example.com/image.jpg");
     }
 
     #[test]
@@ -447,7 +462,7 @@ mod tests {
         let result = parser
             .url_to_local_path_string("https://example.com/")
             .unwrap();
-        assert_eq!(result, "index.html");
+        assert_eq!(result, "example.com/index.html");
     }
 
     #[test]
@@ -456,7 +471,7 @@ mod tests {
         let result = parser
             .url_to_local_path_string("https://example.com/dir/")
             .unwrap();
-        assert_eq!(result, "dir/index.html");
+        assert_eq!(result, "example.com/dir/index.html");
     }
 
     #[test]
@@ -465,7 +480,7 @@ mod tests {
         let result = parser
             .url_to_local_path_string("https://example.com/page")
             .unwrap();
-        assert_eq!(result, "page/index.html");
+        assert_eq!(result, "example.com/page/index.html");
     }
 
     #[test]
@@ -474,7 +489,7 @@ mod tests {
         let result = parser
             .url_to_local_path_string("https://example.com/page?param=value")
             .unwrap();
-        assert_eq!(result, "page/index.html?param=value");
+        assert_eq!(result, "example.com/page/index.html_param_value");
     }
 
     #[test]
