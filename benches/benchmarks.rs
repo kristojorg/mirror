@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use website_mirror::{HtmlParser, FileManager, ResourceType};
 use tempfile::tempdir;
+use website_mirror::{FileManager, HtmlParser, ResourceType};
 
 fn bench_html_parsing(c: &mut Criterion) {
     let html_content = r#"
@@ -20,9 +20,9 @@ fn bench_html_parsing(c: &mut Criterion) {
             </body>
         </html>
     "#;
-    
+
     let parser = HtmlParser::new("https://example.com").unwrap();
-    
+
     c.bench_function("parse_html_resources", |b| {
         b.iter(|| {
             let _resources = parser.extract_resources(black_box(html_content)).unwrap();
@@ -41,7 +41,7 @@ fn bench_path_sanitization(c: &mut Criterion) {
         "path=with=equals",
         "path/with/multiple/special/chars?param=value&other=123#fragment",
     ];
-    
+
     c.bench_function("sanitize_paths", |b| {
         b.iter(|| {
             for path in &test_paths {
@@ -62,7 +62,7 @@ fn bench_url_resolution(c: &mut Criterion) {
         "../../../assets/logo.png",
         "./nested/path/file.css",
     ];
-    
+
     c.bench_function("resolve_urls", |b| {
         b.iter(|| {
             for url in &test_urls {
@@ -85,9 +85,9 @@ fn bench_css_background_extraction(c: &mut Criterion) {
         .bg9 { background-image: url('/images/bg9.jpg'); }
         .bg10 { background: url('/images/bg10.jpg'); }
     "#;
-    
+
     let parser = HtmlParser::new("https://example.com").unwrap();
-    
+
     c.bench_function("extract_css_backgrounds", |b| {
         b.iter(|| {
             let mut resources = Vec::new();
@@ -100,10 +100,14 @@ fn bench_file_saving(c: &mut Criterion) {
     let temp_dir = tempdir().unwrap();
     let file_manager = FileManager::new(temp_dir.path()).unwrap();
     let test_content = b"This is test content for benchmarking file saving operations";
-    
+
     c.bench_function("save_single_file", |b| {
         b.iter(|| {
-            let _result = file_manager.save_file("benchmark.txt", black_box(test_content), Some("text/plain"));
+            let _result = file_manager.save_file(
+                "benchmark.txt",
+                black_box(test_content),
+                Some("text/plain"),
+            );
         });
     });
 }
@@ -118,11 +122,12 @@ fn bench_multiple_file_saving(c: &mut Criterion) {
         ("file4.html", b"<html>Content 4</html>"),
         ("assets/style.css", b"body { color: red; }"),
     ];
-    
+
     c.bench_function("save_multiple_files", |b| {
         b.iter(|| {
             for (path, content) in &test_files {
-                let _result = file_manager.save_file(black_box(path), black_box(content), Some("text/plain"));
+                let _result =
+                    file_manager.save_file(black_box(path), black_box(content), Some("text/plain"));
             }
         });
     });
@@ -138,9 +143,10 @@ fn bench_resource_type_filtering(c: &mut Criterion) {
         false,
         false,
         Some(vec!["images".to_string(), "css".to_string()]),
-        false
-    ).unwrap();
-    
+        false,
+    )
+    .unwrap();
+
     let resource_types = vec![
         ResourceType::CSS,
         ResourceType::JavaScript,
@@ -148,7 +154,7 @@ fn bench_resource_type_filtering(c: &mut Criterion) {
         ResourceType::Link,
         ResourceType::Other,
     ];
-    
+
     c.bench_function("filter_resource_types", |b| {
         b.iter(|| {
             for resource_type in &resource_types {
@@ -168,4 +174,4 @@ criterion_group!(
     bench_multiple_file_saving,
     bench_resource_type_filtering,
 );
-criterion_main!(benches); 
+criterion_main!(benches);
