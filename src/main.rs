@@ -1,37 +1,42 @@
-use clap::Parser;
 use anyhow::Result;
+use clap::Parser;
 
 use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = MirrorCommand::parse();
-    
+
     // Handle full mirror option
     let (max_depth, max_concurrent, ignore_robots, download_external) = if args.full_mirror {
         // Full mirror: unlimited depth crawling of target site + all media files from any site
         (0, 100, true, true)
     } else {
         // Standard mirror: limited depth + all media files from any site (ensures no 404s)
-        (args.max_depth, args.max_concurrent, args.ignore_robots, true)
+        (
+            args.max_depth,
+            args.max_concurrent,
+            args.ignore_robots,
+            true,
+        )
     };
-    
-                let mut mirror = WebsiteMirror::new(
-                &args.url,
-                &args.output_dir,
-                max_depth,
-                max_concurrent,
-                ignore_robots,
-                download_external,
-                args.only_resources.clone(),
-                args.convert_to_webp,
-            )?;
-    
+
+    let mut mirror = WebsiteMirror::new(
+        &args.url,
+        &args.output_dir,
+        max_depth,
+        max_concurrent,
+        ignore_robots,
+        download_external,
+        args.only_resources.clone(),
+        args.convert_to_webp,
+    )?;
+
     mirror.mirror_website().await?;
-    
+
     println!("✅ Website mirroring completed successfully!");
     Ok(())
-} 
+}
 
 #[cfg(test)]
 mod tests {
@@ -45,10 +50,10 @@ mod tests {
             "-o".to_string(),
             "./output".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_ok());
-        
+
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
@@ -63,10 +68,10 @@ mod tests {
             "./output".to_string(),
             "--full-mirror".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_ok());
-        
+
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
@@ -82,10 +87,10 @@ mod tests {
             "./output".to_string(),
             "--convert-to-webp".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_ok());
-        
+
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
@@ -102,14 +107,17 @@ mod tests {
             "--only-resources".to_string(),
             "images,css".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_ok());
-        
+
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
-        assert_eq!(cmd.only_resources, Some(vec!["images".to_string(), "css".to_string()]));
+        assert_eq!(
+            cmd.only_resources,
+            Some(vec!["images".to_string(), "css".to_string()])
+        );
     }
 
     #[test]
@@ -124,10 +132,10 @@ mod tests {
             "-c".to_string(),
             "20".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_ok());
-        
+
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
@@ -144,10 +152,10 @@ mod tests {
             "./output".to_string(),
             "--ignore-robots".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_ok());
-        
+
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
@@ -163,10 +171,10 @@ mod tests {
             "./output".to_string(),
             "--download-external".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_ok());
-        
+
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
@@ -180,7 +188,7 @@ mod tests {
             "-o".to_string(),
             "./output".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_err());
     }
@@ -191,7 +199,7 @@ mod tests {
             "website-mirror".to_string(),
             "https://example.com".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_err());
     }
@@ -206,7 +214,7 @@ mod tests {
             "-d".to_string(),
             "0".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_err());
     }
@@ -221,8 +229,8 @@ mod tests {
             "-c".to_string(),
             "0".to_string(),
         ];
-        
+
         let result = MirrorCommand::try_parse_from(args);
         assert!(result.is_err());
     }
-} 
+}
