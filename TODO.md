@@ -3,6 +3,10 @@
   - Make it check html files
   - Make it check js files also
 2. Generate manifest so we can see statistics, errors, and all files downloaded.
-3. Download files from external sources into separate folders by domain name, similar to how httrack works.
-4. Proxy support
-5. Rewrite html paths for absolute urls and also for relative urls that need to end with /index or .html
+3. Generate a log for each run that details what happened in that run, while the manifest details the current state.
+4. Download files from external sources into separate folders by domain name, similar to how httrack works.
+5. Proxy support
+6. Rewrite html paths for absolute urls and also for relative urls that need to end with /index or .html
+7. Make the manifest hold information about when the file was last downloaded.
+8. Figure out how to handle query parameters. on pcs they are: scraped/procyclingstats.com/www.procyclingstats.com/index.html?popular=pro_me&s=upcoming-races&category=1.html and scraped/procyclingstats.com/www.procyclingstats.com/badge.php?id=17.html
+9. Allow using random user agent from a file/list
