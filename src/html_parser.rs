@@ -3,10 +3,11 @@ use select::document::Document;
 use select::predicate::{Attr, Name};
 use url::Url;
 
+/// Represents a resource found in HTML content
 #[derive(Debug, Clone)]
 pub struct ResourceLink {
-    pub original_url: String,
-    pub local_path: String,
+    pub original_url: String, // Original URL as found in HTML
+    pub absolute_url: String, // Resolved absolute URL
     pub resource_type: ResourceType,
 }
 
@@ -19,6 +20,8 @@ pub enum ResourceType {
     Other,
 }
 
+/// Parser for extracting resources from HTML content
+/// Only responsible for finding and resolving URLs, not for path generation
 #[derive(Clone, Debug)]
 pub struct HtmlParser {
     base_url: Url,
@@ -32,6 +35,7 @@ impl HtmlParser {
         Ok(Self { base_url })
     }
 
+    /// Extract all resources from HTML content
     pub fn extract_resources(&self, html_content: &str) -> Result<Vec<ResourceLink>> {
         let document = Document::from(html_content);
         let mut resources = Vec::new();
@@ -74,20 +78,6 @@ impl HtmlParser {
             }
         }
 
-        // Extract background images from CSS files
-        for link in document.find(Name("link")) {
-            if let Some(href) = link.attr("href") {
-                if let Some(rel) = link.attr("rel") {
-                    if rel.contains("stylesheet") {
-                        // Mark CSS files for background image extraction
-                        if let Ok(resource) = self.create_resource_link(href, ResourceType::CSS) {
-                            resources.push(resource);
-                        }
-                    }
-                }
-            }
-        }
-
         // Extract links
         for link in document.find(Name("a")) {
             if let Some(href) = link.attr("href") {
@@ -96,9 +86,11 @@ impl HtmlParser {
                 }
             }
         }
+
         Ok(resources)
     }
 
+    /// Create a resource link with resolved absolute URL
     fn create_resource_link(&self, url: &str, resource_type: ResourceType) -> Result<ResourceLink> {
         // Skip data URLs and other special schemes
         if url.starts_with("data:")
@@ -111,15 +103,15 @@ impl HtmlParser {
         }
 
         let absolute_url = self.resolve_url(url)?;
-        let local_path = self.url_to_local_path(&absolute_url)?;
 
         Ok(ResourceLink {
-            original_url: url.to_string(), // Store the original URL as-is for HTML replacement
-            local_path,
+            original_url: url.to_string(),
+            absolute_url: absolute_url.to_string(),
             resource_type,
         })
     }
 
+    /// Resolve URLs relative to the file into absolute URLs.
     pub fn resolve_url(&self, url: &str) -> Result<Url> {
         if url.starts_with("http://") || url.starts_with("https://") {
             Ok(Url::parse(url)?)
@@ -134,135 +126,7 @@ impl HtmlParser {
         }
     }
 
-    fn url_to_local_path(&self, url: &Url) -> Result<String> {
-        // Include the host (domain) in the path
-        let host = url.host_str().unwrap_or("localhost");
-        let mut path = url.path().to_string();
-
-        // Remove leading slash
-        if path.starts_with('/') {
-            path = path[1..].to_string();
-        }
-
-        // Handle root path
-        if path.is_empty() {
-            path = "index.html".to_string();
-        } else if path.ends_with('/') {
-            path.push_str("index.html");
-        } else if !path.contains('.') {
-            // No file extension, assume it's a directory
-            path.push_str("/index.html");
-        }
-
-        // Add query parameters if they exist
-        if let Some(query) = url.query() {
-            if !query.is_empty() {
-                path = format!("{}?{}", path, query);
-            }
-        }
-
-        // Combine host and path
-        let full_path = format!("{}/{}", host, path);
-
-        // Sanitize the path for filesystem
-        let sanitized = self.sanitize_path(&full_path);
-
-        Ok(sanitized)
-    }
-
-    pub fn sanitize_path(&self, path: &str) -> String {
-        path.chars()
-            .map(|c| match c {
-                '?' | '&' | '=' | '#' => '_',
-                ' ' => '_',
-                c if c.is_ascii_alphanumeric() || c == '/' || c == '.' || c == '-' => c,
-                _ => '_',
-            })
-            .collect()
-    }
-
-    pub fn convert_html_links(&self, html_content: &str) -> Result<String> {
-        let document = Document::from(html_content);
-        let mut modified_html = html_content.to_string();
-
-        // Convert CSS links
-        for link in document.find(Name("link")) {
-            if let Some(href) = link.attr("href") {
-                if let Some(rel) = link.attr("rel") {
-                    if rel.contains("stylesheet") {
-                        if let Ok(local_path) = self.convert_url_to_local(href) {
-                            modified_html = modified_html.replace(
-                                &format!("href=\"{}\"", href),
-                                &format!("href=\"{}\"", local_path),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Convert JavaScript links
-        for script in document.find(Name("script")) {
-            if let Some(src) = script.attr("src") {
-                if let Ok(local_path) = self.convert_url_to_local(src) {
-                    modified_html = modified_html.replace(
-                        &format!("src=\"{}\"", src),
-                        &format!("src=\"{}\"", local_path),
-                    );
-                }
-            }
-        }
-
-        // Convert image links
-        for img in document.find(Name("img")) {
-            if let Some(src) = img.attr("src") {
-                if let Ok(local_path) = self.convert_url_to_local(src) {
-                    modified_html = modified_html.replace(
-                        &format!("src=\"{}\"", src),
-                        &format!("src=\"{}\"", local_path),
-                    );
-                }
-            }
-        }
-
-        // Convert anchor links
-        for link in document.find(Name("a")) {
-            if let Some(href) = link.attr("href") {
-                if let Ok(local_path) = self.convert_url_to_local(href) {
-                    modified_html = modified_html.replace(
-                        &format!("href=\"{}\"", href),
-                        &format!("href=\"{}\"", local_path),
-                    );
-                }
-            }
-        }
-
-        Ok(modified_html)
-    }
-
-    fn convert_url_to_local(&self, url: &str) -> Result<String> {
-        let absolute_url = self.resolve_url(url)?;
-        let local_path = self.url_to_local_path(&absolute_url)?;
-
-        // Convert to relative path
-        if local_path.starts_with("index.html") {
-            Ok("./".to_string())
-        } else {
-            Ok(format!("./{}", local_path))
-        }
-    }
-
-    pub fn url_to_local_path_string(&self, url: &str) -> Result<String> {
-        if url.starts_with("http://") || url.starts_with("https://") {
-            let parsed_url = Url::parse(url)?;
-            self.url_to_local_path(&parsed_url)
-        } else {
-            // For relative URLs, resolve them first
-            let absolute_url = self.resolve_url(url)?;
-            self.url_to_local_path(&absolute_url)
-        }
-    }
-
+    /// Extract background images from CSS content
     pub fn extract_background_images_from_css(
         &self,
         css_content: &str,
@@ -272,7 +136,6 @@ impl HtmlParser {
         let background_patterns = [
             r#"background-image:\s*url\(['"]?([^'")\s]+)['"]?\)"#,
             r#"background:\s*url\(['"]?([^'")\s]+)['"]?\)"#,
-            r#"background-image:\s*url\(['"]?([^'")\s]+)['"]?\)"#,
         ];
 
         for pattern in &background_patterns {
@@ -294,7 +157,6 @@ impl HtmlParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn test_new_html_parser() {
@@ -333,24 +195,37 @@ mod tests {
             .find(|r| r.resource_type == ResourceType::CSS)
             .unwrap();
         assert_eq!(css_resource.original_url, "/static/style.css");
+        assert_eq!(
+            css_resource.absolute_url,
+            "https://example.com/static/style.css"
+        );
 
         let js_resource = resources
             .iter()
             .find(|r| r.resource_type == ResourceType::JavaScript)
             .unwrap();
         assert_eq!(js_resource.original_url, "/static/script.js");
+        assert_eq!(
+            js_resource.absolute_url,
+            "https://example.com/static/script.js"
+        );
 
         let img_resource = resources
             .iter()
             .find(|r| r.resource_type == ResourceType::Image)
             .unwrap();
         assert_eq!(img_resource.original_url, "/static/image.jpg");
+        assert_eq!(
+            img_resource.absolute_url,
+            "https://example.com/static/image.jpg"
+        );
 
         let link_resource = resources
             .iter()
             .find(|r| r.resource_type == ResourceType::Link)
             .unwrap();
         assert_eq!(link_resource.original_url, "/page");
+        assert_eq!(link_resource.absolute_url, "https://example.com/page");
     }
 
     #[test]
@@ -380,6 +255,10 @@ mod tests {
             css_resource.original_url,
             "https://cdn.example.com/style.css"
         );
+        assert_eq!(
+            css_resource.absolute_url,
+            "https://cdn.example.com/style.css"
+        );
     }
 
     #[test]
@@ -400,6 +279,13 @@ mod tests {
         let resources = parser.extract_resources(html_content).unwrap();
 
         assert_eq!(resources.len(), 3);
+
+        let css_resource = resources
+            .iter()
+            .find(|r| r.resource_type == ResourceType::CSS)
+            .unwrap();
+        assert_eq!(css_resource.original_url, "../style.css");
+        assert_eq!(css_resource.absolute_url, "https://example.com/style.css");
     }
 
     #[test]
@@ -441,72 +327,6 @@ mod tests {
     }
 
     #[test]
-    fn test_url_to_local_path_string_absolute() {
-        let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser
-            .url_to_local_path_string("https://example.com/image.jpg")
-            .unwrap();
-        assert_eq!(result, "example.com/image.jpg");
-    }
-
-    #[test]
-    fn test_url_to_local_path_string_relative() {
-        let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser.url_to_local_path_string("/image.jpg").unwrap();
-        assert_eq!(result, "example.com/image.jpg");
-    }
-
-    #[test]
-    fn test_url_to_local_path_string_root() {
-        let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser
-            .url_to_local_path_string("https://example.com/")
-            .unwrap();
-        assert_eq!(result, "example.com/index.html");
-    }
-
-    #[test]
-    fn test_url_to_local_path_string_directory() {
-        let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser
-            .url_to_local_path_string("https://example.com/dir/")
-            .unwrap();
-        assert_eq!(result, "example.com/dir/index.html");
-    }
-
-    #[test]
-    fn test_url_to_local_path_string_no_extension() {
-        let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser
-            .url_to_local_path_string("https://example.com/page")
-            .unwrap();
-        assert_eq!(result, "example.com/page/index.html");
-    }
-
-    #[test]
-    fn test_url_to_local_path_string_with_query() {
-        let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser
-            .url_to_local_path_string("https://example.com/page?param=value")
-            .unwrap();
-        assert_eq!(result, "example.com/page/index.html_param_value");
-    }
-
-    #[test]
-    fn test_sanitize_path() {
-        let parser = HtmlParser::new("https://example.com").unwrap();
-
-        assert_eq!(parser.sanitize_path("normal/path"), "normal/path");
-        assert_eq!(parser.sanitize_path("path with spaces"), "path_with_spaces");
-        assert_eq!(parser.sanitize_path("path?with=query"), "path_with_query");
-        assert_eq!(parser.sanitize_path("path#fragment"), "path_fragment");
-        assert_eq!(
-            parser.sanitize_path("path&with&ampersands"),
-            "path_with_ampersands"
-        );
-    }
-
-    #[test]
     fn test_resolve_url_absolute() {
         let parser = HtmlParser::new("https://example.com").unwrap();
         let result = parser
@@ -527,13 +347,6 @@ mod tests {
         let parser = HtmlParser::new("https://example.com").unwrap();
         let result = parser.resolve_url("//cdn.example.com/style.css").unwrap();
         assert_eq!(result.as_str(), "https://cdn.example.com/style.css");
-    }
-
-    #[test]
-    fn test_resolve_url_invalid() {
-        let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser.resolve_url("not-a-url");
-        assert!(result.is_err());
     }
 
     #[test]
@@ -592,24 +405,28 @@ mod tests {
             .create_resource_link("/style.css", ResourceType::CSS)
             .unwrap();
         assert_eq!(resource.original_url, "/style.css");
+        assert_eq!(resource.absolute_url, "https://example.com/style.css");
         assert_eq!(resource.resource_type, ResourceType::CSS);
 
         let resource = parser
             .create_resource_link("/script.js", ResourceType::JavaScript)
             .unwrap();
         assert_eq!(resource.original_url, "/script.js");
+        assert_eq!(resource.absolute_url, "https://example.com/script.js");
         assert_eq!(resource.resource_type, ResourceType::JavaScript);
 
         let resource = parser
             .create_resource_link("/image.jpg", ResourceType::Image)
             .unwrap();
         assert_eq!(resource.original_url, "/image.jpg");
+        assert_eq!(resource.absolute_url, "https://example.com/image.jpg");
         assert_eq!(resource.resource_type, ResourceType::Image);
 
         let resource = parser
             .create_resource_link("/page", ResourceType::Link)
             .unwrap();
         assert_eq!(resource.original_url, "/page");
+        assert_eq!(resource.absolute_url, "https://example.com/page");
         assert_eq!(resource.resource_type, ResourceType::Link);
     }
 
@@ -652,13 +469,13 @@ mod tests {
     fn test_resource_link_clone() {
         let resource = ResourceLink {
             original_url: "/test.css".to_string(),
-            local_path: "/local/test.css".to_string(),
+            absolute_url: "https://example.com/test.css".to_string(),
             resource_type: ResourceType::CSS,
         };
 
         let cloned = resource.clone();
         assert_eq!(cloned.original_url, resource.original_url);
-        assert_eq!(cloned.local_path, resource.local_path);
+        assert_eq!(cloned.absolute_url, resource.absolute_url);
         assert_eq!(cloned.resource_type, resource.resource_type);
     }
 

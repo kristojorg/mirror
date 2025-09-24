@@ -1,7 +1,7 @@
 use anyhow::Result;
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use regex::Regex;
+
 use reqwest::{Client, ClientBuilder, StatusCode};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -11,6 +11,8 @@ use tokio::sync::Semaphore;
 
 use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
+use crate::html_rewriter::HtmlRewriter;
+use crate::url_mapper::UrlMapper;
 use webp::Encoder;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +83,7 @@ pub struct WebsiteMirror {
     client: Client,
     file_manager: FileManager,
     html_parser: HtmlParser,
+    url_mapper: UrlMapper,
     visited_urls: Arc<Mutex<HashSet<String>>>,
     download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>,
     semaphore: Arc<Semaphore>,
@@ -88,62 +91,14 @@ pub struct WebsiteMirror {
 }
 
 impl WebsiteMirror {
-    /// Get the local path for a resource, converting image extensions to WebP if needed
+    /// Get the local path for a resource
     fn get_local_path_for_resource(
         &self,
-        html_parser: &HtmlParser,
-        original_url: &str,
-    ) -> Result<String> {
-        let local_path = html_parser.url_to_local_path_string(original_url)?;
-
-        // Convert image extensions to WebP for JPEG/PNG files if the flag is enabled
-        if self.convert_to_webp
-            && (original_url.ends_with(".jpg")
-                || original_url.ends_with(".jpeg")
-                || original_url.ends_with(".png"))
-        {
-            let webp_path = local_path
-                .replace(".jpg", ".webp")
-                .replace(".jpeg", ".webp")
-                .replace(".png", ".webp");
-            Ok(webp_path)
-        } else {
-            Ok(local_path)
-        }
-    }
-
-    /// Static version for use in functions without self access
-    pub fn get_local_path_for_resource_static(
-        html_parser: &HtmlParser,
-        original_url: &str,
-        convert_to_webp: bool,
-        current_html_path: &str,
-    ) -> Result<String> {
-        let local_path = html_parser.url_to_local_path_string(original_url)?;
-
-        // Convert image extensions to WebP for JPEG/PNG files if the flag is enabled
-        let final_local_path = if convert_to_webp
-            && (original_url.ends_with(".jpg")
-                || original_url.ends_with(".jpeg")
-                || original_url.ends_with(".png")
-                || original_url.ends_with(".JPG")
-                || original_url.ends_with(".JPEG")
-                || original_url.ends_with(".PNG"))
-        {
-            local_path
-                .replace(".jpg", ".webp")
-                .replace(".jpeg", ".webp")
-                .replace(".png", ".webp")
-                .replace(".JPG", ".webp")
-                .replace(".JPEG", ".webp")
-                .replace(".PNG", ".webp")
-        } else {
-            local_path
-        };
-
-        // Calculate relative path from current HTML file to the resource
-        let relative_path = Self::calculate_relative_path(current_html_path, &final_local_path);
-        Ok(relative_path)
+        absolute_url: &str,
+        resource_type: &ResourceType,
+    ) -> Result<PathBuf> {
+        self.url_mapper
+            .url_to_local_path(absolute_url, resource_type)
     }
 
     /// Calculate relative path from source file to target file
@@ -304,6 +259,7 @@ impl WebsiteMirror {
         let client = Self::build_http_client()?;
         let file_manager = FileManager::new(output_dir)?;
         let html_parser = HtmlParser::new(base_url)?;
+        let url_mapper = UrlMapper::new(convert_to_webp)?;
 
         Ok(Self {
             base_url: base_url.to_string(),
@@ -317,6 +273,7 @@ impl WebsiteMirror {
             client,
             file_manager,
             html_parser,
+            url_mapper,
             visited_urls: Arc::new(Mutex::new(HashSet::new())),
             download_queue: Arc::new(Mutex::new(BinaryHeap::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
@@ -444,13 +401,14 @@ impl WebsiteMirror {
     }
 
     /// Process resources from HTML content - extract, categorize, download, and queue
-    /// Returns a list of (original_url, local_path) pairs for successful downloads
+    /// Returns a mapping of original URLs to local paths for HTML rewriting
     async fn process_html_resources(
         client: &Client,
         file_manager: &FileManager,
         page_html_parser: &HtmlParser,
+        url_mapper: &UrlMapper,
         html_content: &str,
-        current_html_path: &str,
+        current_page_url: &str,
         depth: usize,
         visited_urls: &Arc<Mutex<HashSet<String>>>,
         download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
@@ -458,9 +416,9 @@ impl WebsiteMirror {
         base_url: &str,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
-    ) -> Result<Vec<(String, String)>> {
+    ) -> Result<HashMap<String, String>> {
         let resources = page_html_parser.extract_resources(html_content)?;
-        let mut url_replacements = Vec::new();
+        let mut url_mappings = HashMap::new();
 
         // Helper function to check if a resource type should be processed
         let should_process_resource_type = |resource_type: &ResourceType| -> bool {
@@ -495,11 +453,11 @@ impl WebsiteMirror {
                     should_process_resource_type(&resource.resource_type)
                 }
                 ResourceType::Link => {
-                    resource.original_url.contains(base_url)
+                    resource.absolute_url.starts_with(base_url)
                         && should_process_resource_type(&resource.resource_type)
                 }
                 ResourceType::Other => {
-                    resource.original_url.contains(base_url)
+                    resource.absolute_url.starts_with(base_url)
                         && should_process_resource_type(&resource.resource_type)
                 }
             };
@@ -510,7 +468,7 @@ impl WebsiteMirror {
                     DownloadPriority::High => high_resources.push(resource.clone()),
                     DownloadPriority::Normal => normal_resources.push(resource.clone()),
                 }
-            } else if !resource.original_url.contains(base_url) {
+            } else if !resource.absolute_url.starts_with(base_url) {
                 match resource.resource_type {
                     ResourceType::Link => println!(
                         "⏭️  Skipping external page: {} (but will download its media)",
@@ -548,8 +506,9 @@ impl WebsiteMirror {
             if let Err(e) = Self::download_resource(
                 client,
                 file_manager,
-                page_html_parser,
-                &resource.original_url,
+                url_mapper,
+                &resource.absolute_url,
+                &resource.resource_type,
                 download_cache,
                 convert_to_webp,
             )
@@ -557,38 +516,41 @@ impl WebsiteMirror {
             {
                 eprintln!(
                     "⚠️  Failed to download CRITICAL {} resource {}: {}",
-                    resource_type_str, resource.original_url, e
+                    resource_type_str, resource.absolute_url, e
                 );
             } else {
-                // Collect successful downloads for HTML rewriting
-                if let Ok(local_path) = Self::get_local_path_for_resource_static(
-                    page_html_parser,
-                    &resource.original_url,
-                    convert_to_webp,
-                    current_html_path,
-                ) {
-                    url_replacements.push((resource.original_url.clone(), local_path));
+                // Map original URL to local path for HTML rewriting
+                if let Ok(local_path) =
+                    url_mapper.url_to_local_path(&resource.absolute_url, &resource.resource_type)
+                {
+                    // Calculate relative path from current HTML to resource
+                    if let Ok(current_html_path) =
+                        url_mapper.url_to_local_path(current_page_url, &ResourceType::Link)
+                    {
+                        let relative_path = Self::calculate_relative_path(
+                            &current_html_path.to_string_lossy(),
+                            &local_path.to_string_lossy(),
+                        );
+                        url_mappings.insert(resource.original_url.clone(), relative_path);
+                    }
                 }
             }
         }
 
         // Queue HTML links for later processing
         for resource in &high_resources {
-            if !visited_urls
-                .lock()
-                .unwrap()
-                .contains(&resource.original_url)
-            {
+            let normalized_url = UrlMapper::normalize_root_url(&resource.absolute_url);
+            if !visited_urls.lock().unwrap().contains(&normalized_url) {
                 let mut queue = download_queue.lock().unwrap();
                 queue.push(DownloadTask {
-                    url: resource.original_url.clone(),
+                    url: resource.absolute_url.clone(),
                     depth: depth + 1,
                     priority: DownloadPriority::High,
                     resource_type: Some(resource.resource_type.clone()),
                 });
                 println!(
                     "⚡ Queued HIGH priority HTML page: {}",
-                    resource.original_url
+                    resource.absolute_url
                 );
             }
         }
@@ -608,8 +570,9 @@ impl WebsiteMirror {
             if let Err(e) = Self::download_resource(
                 client,
                 file_manager,
-                page_html_parser,
-                &resource.original_url,
+                url_mapper,
+                &resource.absolute_url,
+                &resource.resource_type,
                 download_cache,
                 convert_to_webp,
             )
@@ -617,47 +580,54 @@ impl WebsiteMirror {
             {
                 eprintln!(
                     "⚠️  Failed to download NORMAL {} resource {}: {}",
-                    resource_type_str, resource.original_url, e
+                    resource_type_str, resource.absolute_url, e
                 );
             } else {
-                // Collect successful downloads for HTML rewriting
-                if let Ok(local_path) = Self::get_local_path_for_resource_static(
-                    page_html_parser,
-                    &resource.original_url,
-                    convert_to_webp,
-                    current_html_path,
-                ) {
-                    url_replacements.push((resource.original_url.clone(), local_path));
+                // Map original URL to local path for HTML rewriting
+                if let Ok(local_path) =
+                    url_mapper.url_to_local_path(&resource.absolute_url, &resource.resource_type)
+                {
+                    // Calculate relative path from current HTML to resource
+                    if let Ok(current_html_path) =
+                        url_mapper.url_to_local_path(current_page_url, &ResourceType::Link)
+                    {
+                        let relative_path = Self::calculate_relative_path(
+                            &current_html_path.to_string_lossy(),
+                            &local_path.to_string_lossy(),
+                        );
+                        url_mappings.insert(resource.original_url.clone(), relative_path);
+                    }
                 }
             }
         }
 
-        Ok(url_replacements)
+        Ok(url_mappings)
     }
 
     async fn download_and_process_url(
         client: &Client,
         file_manager: &FileManager,
-        html_parser: &HtmlParser,
+        _html_parser: &HtmlParser,
         url: &str,
         depth: usize,
         visited_urls: &Arc<Mutex<HashSet<String>>>,
         download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
         download_cache: &Arc<Mutex<HashMap<String, String>>>,
-        download_external: bool,
+        _download_external: bool,
         base_url: &str,
         priority: DownloadPriority,
-        resource_type: Option<ResourceType>,
+        _resource_type: Option<ResourceType>,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
     ) -> Result<()> {
-        // Check if already visited
+        // Check if already visited (normalize root URLs to avoid duplicates)
         {
+            let normalized_url = UrlMapper::normalize_root_url(url);
             let mut visited = visited_urls.lock().unwrap();
-            if visited.contains(url) {
+            if visited.contains(&normalized_url) {
                 return Ok(());
             }
-            visited.insert(url.to_string());
+            visited.insert(normalized_url);
         }
 
         let priority_str = match priority {
@@ -720,17 +690,17 @@ impl WebsiteMirror {
 
             // Create a new HTML parser with the current page's base URL
             let page_html_parser = HtmlParser::new(url)?;
+            let url_mapper = UrlMapper::new(convert_to_webp)?;
+            let html_rewriter = HtmlRewriter::new();
 
-            // Calculate the local path for the current HTML file (needed for relative path calculations)
-            let current_html_path = page_html_parser.url_to_local_path_string(url)?;
-
-            // Process resources and get URL replacements
-            let url_replacements = Self::process_html_resources(
+            // Process resources and get URL mappings
+            let url_mappings = Self::process_html_resources(
                 client,
                 file_manager,
                 &page_html_parser,
+                &url_mapper,
                 &html_content,
-                &current_html_path,
+                url,
                 depth,
                 visited_urls,
                 download_queue,
@@ -741,76 +711,8 @@ impl WebsiteMirror {
             )
             .await?;
 
-            // Apply URL replacements to HTML content
-            let mut html_content_updated = html_content.to_string();
-            for (original_url, local_path) in url_replacements {
-                let before_count = html_content_updated.matches(&original_url).count();
-                html_content_updated = html_content_updated.replace(&original_url, &local_path);
-                let after_count = html_content_updated.matches(&local_path).count();
-                println!(
-                    "🔄 Updated HTML: {} -> {} ({} replacements)",
-                    original_url, local_path, after_count
-                );
-
-                // Debug: Check if the replacement actually worked
-                if before_count > 0 && after_count == 0 {
-                    eprintln!(
-                        "⚠️  Warning: URL replacement may have failed for: {}",
-                        original_url
-                    );
-                }
-
-                // Handle WebP extension replacements if needed
-                if convert_to_webp
-                    && (original_url.ends_with(".jpg")
-                        || original_url.ends_with(".jpeg")
-                        || original_url.ends_with(".png")
-                        || original_url.ends_with(".JPG")
-                        || original_url.ends_with(".JPEG")
-                        || original_url.ends_with(".PNG"))
-                {
-                    // Additional WebP extension replacement logic
-                    if let Some(filename) = original_url.split('/').last() {
-                        let extension = if original_url.ends_with(".jpg")
-                            || original_url.ends_with(".JPG")
-                        {
-                            if original_url.ends_with(".jpg") {
-                                ".jpg"
-                            } else {
-                                ".JPG"
-                            }
-                        } else if original_url.ends_with(".jpeg") || original_url.ends_with(".JPEG")
-                        {
-                            if original_url.ends_with(".jpeg") {
-                                ".jpeg"
-                            } else {
-                                ".JPEG"
-                            }
-                        } else {
-                            if original_url.ends_with(".png") {
-                                ".png"
-                            } else {
-                                ".PNG"
-                            }
-                        };
-
-                        let new_filename = filename.replace(extension, ".webp");
-                        let new_url = original_url.replace(filename, &new_filename);
-
-                        let before_ext_count = html_content_updated.matches(&original_url).count();
-                        html_content_updated =
-                            html_content_updated.replace(&original_url, &new_url);
-                        let after_ext_count = html_content_updated.matches(&new_url).count();
-
-                        if before_ext_count > 0 {
-                            println!(
-                                "🔄 Updated file extension: {} -> {} ({} replacements)",
-                                original_url, new_url, after_ext_count
-                            );
-                        }
-                    }
-                }
-            }
+            // Apply URL replacements using HtmlRewriter
+            let mut html_content_updated = html_rewriter.rewrite_urls(&html_content, &url_mappings);
 
             // Additional comprehensive WebP extension replacement for any remaining image references
             if convert_to_webp {
@@ -825,12 +727,15 @@ impl WebsiteMirror {
             println!("{}", preview);
 
             // Save the updated HTML with local paths for resources
-            println!("💾 Saving HTML to: {}", current_html_path);
-            let saved_path = file_manager.save_file(
-                &current_html_path,
-                html_content_updated.as_bytes(),
-                Some(&content_type),
-            )?;
+            let local_html_path = url_mapper.url_to_local_path(url, &ResourceType::Link)?;
+            println!("💾 Saving HTML to: {}", local_html_path.display());
+            println!("🔍 DEBUG: local_html_path = {:?}", local_html_path);
+            println!(
+                "🔍 DEBUG: file_manager.base_dir() = {:?}",
+                file_manager.base_dir()
+            );
+            let saved_path =
+                file_manager.save_file(&local_html_path, html_content_updated.as_bytes())?;
             println!("✅ Saved HTML to: {}", saved_path.display());
 
             // Note: Links are now processed in the priority-based resource processing above
@@ -853,11 +758,13 @@ impl WebsiteMirror {
                     "📥 Processing NORMAL background image: {}",
                     resource.original_url
                 );
+                let url_mapper = UrlMapper::new(convert_to_webp)?;
                 if let Err(e) = Self::download_resource(
                     client,
                     file_manager,
-                    &page_html_parser,
-                    &resource.original_url,
+                    &url_mapper,
+                    &resource.absolute_url,
+                    &ResourceType::Image,
                     download_cache,
                     convert_to_webp,
                 )
@@ -865,21 +772,31 @@ impl WebsiteMirror {
                 {
                     eprintln!(
                         "⚠️  Failed to download background image {}: {}",
-                        resource.original_url, e
+                        resource.absolute_url, e
                     );
                 }
             }
 
             // Save the CSS file
-            let local_path = page_html_parser.url_to_local_path_string(url)?;
-            println!("💾 Saving CSS to: {}", local_path);
-            let saved_path = file_manager.save_file(&local_path, &content, Some(&content_type))?;
+            let url_mapper = UrlMapper::new(convert_to_webp)?;
+            let local_path = url_mapper.url_to_local_path(url, &ResourceType::CSS)?;
+            println!("💾 Saving CSS to: {}", local_path.display());
+            let saved_path = file_manager.save_file(&local_path, &content)?;
             println!("✅ Saved CSS to: {:?}", saved_path);
         } else {
             // Save non-HTML content as-is
-            let local_path = html_parser.url_to_local_path_string(url)?;
-            println!("💾 Saving non-HTML to: {}", local_path);
-            let saved_path = file_manager.save_file(&local_path, &content, Some(&content_type))?;
+            let url_mapper = UrlMapper::new(convert_to_webp)?;
+            // Determine resource type from URL/content
+            let resource_type = if url.ends_with(".js") {
+                ResourceType::JavaScript
+            } else if url.ends_with(".jpg") || url.ends_with(".png") || url.ends_with(".gif") {
+                ResourceType::Image
+            } else {
+                ResourceType::Other
+            };
+            let local_path = url_mapper.url_to_local_path(url, &resource_type)?;
+            println!("💾 Saving non-HTML to: {}", local_path.display());
+            let saved_path = file_manager.save_file(&local_path, &content)?;
             println!("✅ Saved non-HTML to: {:?}", saved_path);
         }
 
@@ -890,8 +807,9 @@ impl WebsiteMirror {
     async fn download_resource(
         client: &Client,
         file_manager: &FileManager,
-        html_parser: &HtmlParser,
+        url_mapper: &UrlMapper,
         url: &str,
+        resource_type: &ResourceType,
         download_cache: &Arc<Mutex<HashMap<String, String>>>,
         convert_to_webp: bool,
     ) -> Result<()> {
@@ -910,49 +828,46 @@ impl WebsiteMirror {
 
         // Check if file exists on disk
         // First convert URL to the local path where it would be saved
-        let local_path = html_parser.url_to_local_path_string(url)?;
+        let local_path = url_mapper.url_to_local_path(url, resource_type)?;
         if file_manager.file_exists(&local_path) {
             // Add to cache for future reference
             let mut cache = download_cache.lock().unwrap();
-            cache.insert(url.to_string(), local_path.clone());
+            cache.insert(url.to_string(), local_path.to_string_lossy().to_string());
             println!(
                 "⏭️  Skipping {} (already exists on disk at {})",
-                url, local_path
+                url,
+                local_path.display()
             );
             return Ok(());
         }
 
-        // Determine resource type for better logging
-        let resource_type = if url.ends_with(".css") || url.contains("/css/") {
-            "CSS"
-        } else if url.ends_with(".js") || url.contains("/js/") {
-            "JavaScript"
-        } else if url.ends_with(".png")
-            || url.ends_with(".jpg")
-            || url.ends_with(".jpeg")
-            || url.ends_with(".gif")
-            || url.ends_with(".webp")
-            || url.ends_with(".svg")
-        {
-            "Image"
-        } else if url.ends_with(".woff")
-            || url.ends_with(".woff2")
-            || url.ends_with(".ttf")
-            || url.ends_with(".eot")
-        {
-            "Font"
-        } else {
-            "Resource"
+        // Determine resource type string for better logging
+        let resource_type_str = match resource_type {
+            ResourceType::CSS => "CSS",
+            ResourceType::JavaScript => "JavaScript",
+            ResourceType::Image => "Image",
+            ResourceType::Link => "HTML",
+            ResourceType::Other => {
+                if url.ends_with(".woff")
+                    || url.ends_with(".woff2")
+                    || url.ends_with(".ttf")
+                    || url.ends_with(".eot")
+                {
+                    "Font"
+                } else {
+                    "Resource"
+                }
+            }
         };
 
-        println!("📥 Downloading {}: {}", resource_type, url);
+        println!("📥 Downloading {}: {}", resource_type_str, url);
 
         let response = match client.get(url).send().await {
             Ok(resp) => resp,
             Err(e) => {
                 eprintln!(
                     "❌ Failed to send request for {} {}: {}",
-                    resource_type, url, e
+                    resource_type_str, url, e
                 );
                 return Ok(());
             }
@@ -962,13 +877,13 @@ impl WebsiteMirror {
             eprintln!(
                 "⚠️  HTTP {} for {} {}",
                 response.status(),
-                resource_type,
+                resource_type_str,
                 url
             );
             return Ok(());
         }
 
-        let content_type = response
+        let _content_type = response
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
@@ -978,15 +893,17 @@ impl WebsiteMirror {
         let content = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
-                eprintln!("❌ Failed to read {} body {}: {}", resource_type, url, e);
+                eprintln!(
+                    "❌ Failed to read {} body {}: {}",
+                    resource_type_str, url, e
+                );
                 return Ok(());
             }
         };
 
-        // We already have local_path from the file existence check above
-
         // Convert images to WebP if they're JPEG or PNG and the flag is enabled
-        let (final_content, final_content_type, final_local_path) = if convert_to_webp
+        let final_content = if convert_to_webp
+            && matches!(resource_type, ResourceType::Image)
             && (url.ends_with(".jpg")
                 || url.ends_with(".jpeg")
                 || url.ends_with(".png")
@@ -995,58 +912,31 @@ impl WebsiteMirror {
                 || url.ends_with(".PNG"))
         {
             // Convert to WebP
-            let webp_data = Self::convert_to_webp_static(&content, url)?;
-
-            // Change file extension to .webp (handle both lowercase and uppercase)
-            let webp_path = local_path
-                .replace(".jpg", ".webp")
-                .replace(".jpeg", ".webp")
-                .replace(".png", ".webp")
-                .replace(".JPG", ".webp")
-                .replace(".JPEG", ".webp")
-                .replace(".PNG", ".webp");
-
-            (webp_data, "image/webp".to_string(), webp_path)
+            Self::convert_to_webp_static(&content, url)?
         } else {
-            // Keep original content and path
-            (content.to_vec(), content_type, local_path.clone())
+            // Keep original content
+            content.to_vec()
         };
 
-        // For WebP conversion, we need to save the file with the .webp extension
-        // but also ensure the path matches what will be used in HTML rewriting
-        let save_path = if convert_to_webp
-            && (url.ends_with(".jpg")
-                || url.ends_with(".jpeg")
-                || url.ends_with(".png")
-                || url.ends_with(".JPG")
-                || url.ends_with(".JPEG")
-                || url.ends_with(".PNG"))
-        {
-            // Use the .webp path for saving
-            final_local_path.clone()
-        } else {
-            // Use the original path for saving
-            local_path.clone()
+        // Note: The local_path already has the correct extension (.webp if convert_to_webp is true)
+        // because UrlMapper handles the conversion logic
+        let saved_path = match file_manager.save_file(&local_path, &final_content) {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("❌ Failed to save {} {}: {}", resource_type_str, url, e);
+                return Ok(());
+            }
         };
 
-        let saved_path =
-            match file_manager.save_file(&save_path, &final_content, Some(&final_content_type)) {
-                Ok(path) => path,
-                Err(e) => {
-                    eprintln!("❌ Failed to save {} {}: {}", resource_type, url, e);
-                    return Ok(());
-                }
-            };
-
-        // Add to download cache - use the save_path to ensure consistency
+        // Add to download cache
         {
             let mut cache = download_cache.lock().unwrap();
-            cache.insert(url.to_string(), save_path.to_string());
+            cache.insert(url.to_string(), local_path.to_string_lossy().to_string());
         }
 
         println!(
             "✅ Downloaded {} to: {}",
-            resource_type,
+            resource_type_str,
             saved_path.display()
         );
 

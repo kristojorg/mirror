@@ -10,3 +10,9 @@
 7. Make the manifest hold information about when the file was last downloaded.
 8. Figure out how to handle query parameters. on pcs they are: scraped/procyclingstats.com/www.procyclingstats.com/index.html?popular=pro_me&s=upcoming-races&category=1.html and scraped/procyclingstats.com/www.procyclingstats.com/badge.php?id=17.html
 9. Allow using random user agent from a file/list
+
+
+## Notes
+
+- Maybe we need UrlMapper to handle url resolution, where we pass it the file or url that a url was found in so it can resolve the relative url relative to that file. How this works would differ though between if it is a local file or a remote url, I think.
+- We are logging incorrectly: Saved HTML to: sites/scrapethissite-domains/sites/scrapethissite-domains/www.scrapethissite.com/index.html
