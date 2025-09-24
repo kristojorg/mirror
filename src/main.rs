@@ -53,7 +53,20 @@ async fn main() -> Result<()> {
     );
 
     // Get statistics from the mirror
-    let stats = mirror.get_statistics();
+    let mirror_stats = mirror.get_mirror_state_statistics();
+
+    // Calculate total successful and failed downloads
+    let total_successful = mirror_stats.downloads.html.success
+        + mirror_stats.downloads.css.success
+        + mirror_stats.downloads.js.success
+        + mirror_stats.downloads.images.success
+        + mirror_stats.downloads.other.success;
+
+    let total_failed = mirror_stats.downloads.html.error
+        + mirror_stats.downloads.css.error
+        + mirror_stats.downloads.js.error
+        + mirror_stats.downloads.images.error
+        + mirror_stats.downloads.other.error;
 
     // Create summary
     let summary = RunSummary {
@@ -61,12 +74,12 @@ async fn main() -> Result<()> {
         end_time: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         duration: duration_str,
         base_url: args.url.clone(),
-        pages_crawled: stats.pages_crawled,
-        total_resources: stats.total_resources,
-        successful_downloads: stats.successful_downloads,
-        failed_downloads: stats.failed_downloads,
-        total_bytes: 0, // TODO: Track bytes downloaded
-        errors: stats.errors,
+        pages_crawled: mirror_stats.downloads.html.success,
+        total_resources: total_successful,
+        successful_downloads: total_successful,
+        failed_downloads: total_failed,
+        total_bytes: mirror_stats.total_bytes,
+        errors: Vec::new(), // Error messages are tracked in the state itself
     };
 
     // Write summary

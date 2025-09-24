@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
 use crate::html_rewriter::HtmlRewriter;
-use crate::url_map_cache::UrlMapCache;
+use crate::mirror_state::MirrorState;
 use crate::url_mapper::UrlMapper;
 use webp::Encoder;
 
@@ -70,13 +70,6 @@ impl PartialOrd for DownloadTask {
     }
 }
 
-pub struct Statistics {
-    pub pages_crawled: usize,
-    pub total_resources: usize,
-    pub successful_downloads: usize,
-    pub failed_downloads: usize,
-    pub errors: Vec<String>,
-}
 
 #[derive(Clone, Debug)]
 pub struct WebsiteMirror {
@@ -93,7 +86,7 @@ pub struct WebsiteMirror {
     html_parser: HtmlParser,
     visited_urls: Arc<Mutex<HashSet<String>>>,
     download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>,
-    url_cache: UrlMapCache, // Persistent URL -> local path mapping
+    mirror_state: MirrorState, // Persistent state and statistics tracking
 }
 
 impl WebsiteMirror {
@@ -257,7 +250,7 @@ impl WebsiteMirror {
         let client = Self::build_http_client()?;
         let file_manager = FileManager::new(output_dir)?;
         let html_parser = HtmlParser::new(base_url)?;
-        let url_cache = UrlMapCache::new(output_dir)?;
+        let mirror_state = MirrorState::new(output_dir)?;
 
         Ok(Self {
             base_url: base_url.to_string(),
@@ -273,7 +266,7 @@ impl WebsiteMirror {
             html_parser,
             visited_urls: Arc::new(Mutex::new(HashSet::new())),
             download_queue: Arc::new(Mutex::new(BinaryHeap::new())),
-            url_cache,
+            mirror_state,
         })
     }
 
@@ -288,20 +281,9 @@ impl WebsiteMirror {
         Ok(client)
     }
 
-    /// Get statistics about the mirroring operation
-    pub fn get_statistics(&self) -> Statistics {
-        let pages_crawled = self.visited_urls.lock().unwrap().len();
-        let total_resources = self.url_cache.len();
-
-        // For now, we'll approximate these values
-        // In a future phase, we'll track these more accurately
-        Statistics {
-            pages_crawled,
-            total_resources,
-            successful_downloads: total_resources, // Approximation: cached items were successful
-            failed_downloads: 0,                   // TODO: Track failed downloads in Phase 2
-            errors: Vec::new(),                    // TODO: Collect errors in Phase 2
-        }
+    /// Get statistics from the MirrorState
+    pub fn get_mirror_state_statistics(&self) -> crate::mirror_state::Statistics {
+        self.mirror_state.get_statistics()
     }
 
     pub async fn mirror_website(&mut self) -> Result<()> {
@@ -355,7 +337,7 @@ impl WebsiteMirror {
                 let file_manager = self.file_manager.clone();
                 let visited_urls = self.visited_urls.clone();
                 let download_queue = self.download_queue.clone();
-                let url_cache = self.url_cache.clone();
+                let mirror_state = self.mirror_state.clone();
 
                 progress_bar.set_message(format!("Downloading: {}", url));
 
@@ -370,7 +352,7 @@ impl WebsiteMirror {
                     depth,
                     &visited_urls,
                     &download_queue,
-                    &url_cache,
+                    &mirror_state,
                     &base_url,
                     priority,
                     resource_type,
@@ -469,7 +451,7 @@ impl WebsiteMirror {
         depth: usize,
         visited_urls: &Arc<Mutex<HashSet<String>>>,
         download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
-        url_cache: &UrlMapCache,
+        mirror_state: &MirrorState,
         base_url: &str,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
@@ -568,7 +550,7 @@ impl WebsiteMirror {
                 url_mapper,
                 &resource.absolute_url,
                 &resource.resource_type,
-                url_cache,
+                mirror_state,
                 convert_to_webp,
             )
             .await
@@ -657,7 +639,7 @@ impl WebsiteMirror {
                 url_mapper,
                 &resource.absolute_url,
                 &resource.resource_type,
-                url_cache,
+                mirror_state,
                 convert_to_webp,
             )
             .await
@@ -697,7 +679,7 @@ impl WebsiteMirror {
         depth: usize,
         visited_urls: &Arc<Mutex<HashSet<String>>>,
         download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
-        url_cache: &UrlMapCache,
+        mirror_state: &MirrorState,
         base_url: &str,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
@@ -715,11 +697,7 @@ impl WebsiteMirror {
                 local_html_path.display()
             );
 
-            // Add to cache to ensure it's tracked
-            url_cache.insert(
-                url.to_string(),
-                local_html_path.to_string_lossy().to_string(),
-            )?;
+            // File already exists, should already be in the manifest from previous run
 
             // Read the existing HTML to extract links
             match file_manager.read_file(&local_html_path) {
@@ -761,6 +739,11 @@ impl WebsiteMirror {
             Ok(resp) => resp,
             Err(e) => {
                 log::error!("❌ Request failed: {}", e);
+                mirror_state.track_download_error(
+                    url.to_string(),
+                    ResourceType::Link,
+                    &format!("Request failed: {}", e),
+                )?;
                 return Ok(());
             }
         };
@@ -795,7 +778,7 @@ impl WebsiteMirror {
             depth,
             visited_urls,
             download_queue,
-            url_cache,
+            mirror_state,
             base_url,
             only_resources,
             convert_to_webp,
@@ -819,10 +802,13 @@ impl WebsiteMirror {
             file_manager.save_file(&local_html_path, html_content_updated.as_bytes())?;
         log::info!("✅ Saved HTML to: {}", saved_path.display());
 
-        // Add to persistent cache
-        url_cache.insert(
+        // Track successful HTML download
+        let size_bytes = html_content_updated.len() as u64;
+        mirror_state.track_download_success(
             url.to_string(),
             local_html_path.to_string_lossy().to_string(),
+            ResourceType::Link,
+            size_bytes,
         )?;
 
         Ok(())
@@ -832,7 +818,7 @@ impl WebsiteMirror {
         client: &Client,
         file_manager: &FileManager,
         url: &str,
-        url_cache: &UrlMapCache,
+        mirror_state: &MirrorState,
         convert_to_webp: bool,
     ) -> Result<()> {
         log::info!("🎨 Processing CSS file: {}", url);
@@ -842,8 +828,7 @@ impl WebsiteMirror {
         let local_path = url_mapper.url_to_local_path(url, &ResourceType::CSS)?;
 
         if file_manager.file_exists(&local_path) {
-            // Add to cache to ensure it's tracked
-            url_cache.insert(url.to_string(), local_path.to_string_lossy().to_string())?;
+            // File already exists, should already be in the manifest from previous run
             log::info!(
                 "⏭️  Skipping CSS (already exists on disk at {})",
                 local_path.display()
@@ -856,6 +841,11 @@ impl WebsiteMirror {
             Ok(resp) => resp,
             Err(e) => {
                 log::error!("❌ Request failed: {}", e);
+                mirror_state.track_download_error(
+                    url.to_string(),
+                    ResourceType::CSS,
+                    &format!("Request failed: {}", e),
+                )?;
                 return Ok(());
             }
         };
@@ -892,7 +882,7 @@ impl WebsiteMirror {
                 &url_mapper,
                 &resource.absolute_url,
                 &ResourceType::Image,
-                url_cache,
+                mirror_state,
                 convert_to_webp,
             )
             .await
@@ -912,8 +902,14 @@ impl WebsiteMirror {
         let saved_path = file_manager.save_file(&local_path, &content)?;
         log::info!("✅ Saved CSS to: {:?}", saved_path);
 
-        // Add to persistent cache
-        url_cache.insert(url.to_string(), local_path.to_string_lossy().to_string())?;
+        // Track successful CSS download
+        let size_bytes = content.len() as u64;
+        mirror_state.track_download_success(
+            url.to_string(),
+            local_path.to_string_lossy().to_string(),
+            ResourceType::CSS,
+            size_bytes,
+        )?;
 
         Ok(())
     }
@@ -925,7 +921,7 @@ impl WebsiteMirror {
         depth: usize,
         visited_urls: &Arc<Mutex<HashSet<String>>>,
         download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
-        url_cache: &UrlMapCache,
+        mirror_state: &MirrorState,
         base_url: &str,
         priority: DownloadPriority,
         resource_type: Option<ResourceType>,
@@ -960,7 +956,7 @@ impl WebsiteMirror {
                     depth,
                     visited_urls,
                     download_queue,
-                    url_cache,
+                    mirror_state,
                     base_url,
                     only_resources,
                     convert_to_webp,
@@ -973,7 +969,7 @@ impl WebsiteMirror {
                     client,
                     file_manager,
                     url,
-                    url_cache,
+                    mirror_state,
                     convert_to_webp,
                 )
                 .await?;
@@ -988,7 +984,7 @@ impl WebsiteMirror {
                     &url_mapper,
                     url,
                     &resource_type,
-                    url_cache,
+                    mirror_state,
                     convert_to_webp,
                 )
                 .await?;
@@ -1005,11 +1001,11 @@ impl WebsiteMirror {
         url_mapper: &UrlMapper,
         url: &str,
         resource_type: &ResourceType,
-        url_cache: &UrlMapCache,
+        mirror_state: &MirrorState,
         convert_to_webp: bool,
     ) -> Result<()> {
         // Check if already downloaded using cache
-        if let Some(cached_path) = url_cache.get_path(url) {
+        if let Some(cached_path) = mirror_state.get_path(url) {
             log::info!(
                 "⏭️  Skipping {} (already downloaded to {})",
                 url,
@@ -1022,8 +1018,7 @@ impl WebsiteMirror {
         // First convert URL to the local path where it would be saved
         let local_path = url_mapper.url_to_local_path(url, resource_type)?;
         if file_manager.file_exists(&local_path) {
-            // Add to cache for future reference
-            url_cache.insert(url.to_string(), local_path.to_string_lossy().to_string())?;
+            // File already exists, should already be in the manifest from previous run
             log::info!(
                 "⏭️  Skipping {} (already exists on disk at {})",
                 url,
@@ -1062,6 +1057,11 @@ impl WebsiteMirror {
                     url,
                     e
                 );
+                mirror_state.track_download_error(
+                    url.to_string(),
+                    resource_type.clone(),
+                    &format!("Request failed: {}", e),
+                )?;
                 return Ok(());
             }
         };
@@ -1123,8 +1123,14 @@ impl WebsiteMirror {
             }
         };
 
-        // Add to persistent cache
-        url_cache.insert(url.to_string(), local_path.to_string_lossy().to_string())?;
+        // Track successful download
+        let size_bytes = final_content.len() as u64;
+        mirror_state.track_download_success(
+            url.to_string(),
+            local_path.to_string_lossy().to_string(),
+            resource_type.clone(),
+            size_bytes,
+        )?;
 
         log::info!(
             "✅ Downloaded {} to: {}",
