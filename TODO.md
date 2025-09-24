@@ -3,6 +3,7 @@
   - Make it check html files DONE
   - Make it check js files also DONE
 2. Generate manifest so we can see statistics, errors, and all files downloaded.
+  - This could also help us if some assets are missing or not downloaded yet, or if we need to go back and forth between local and remote urls.
 3. Generate a log for each run that details what happened in that run, while the manifest details the current state.
 4. Download files from external sources into separate folders by domain name, similar to how httrack works.
 5. Proxy support
