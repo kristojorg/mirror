@@ -83,7 +83,6 @@ pub struct WebsiteMirror {
     client: Client,
     file_manager: FileManager,
     html_parser: HtmlParser,
-    url_mapper: UrlMapper,
     visited_urls: Arc<Mutex<HashSet<String>>>,
     download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>,
     semaphore: Arc<Semaphore>,
@@ -91,16 +90,6 @@ pub struct WebsiteMirror {
 }
 
 impl WebsiteMirror {
-    /// Get the local path for a resource
-    fn get_local_path_for_resource(
-        &self,
-        absolute_url: &str,
-        resource_type: &ResourceType,
-    ) -> Result<PathBuf> {
-        self.url_mapper
-            .url_to_local_path(absolute_url, resource_type)
-    }
-
     /// Calculate relative path from source file to target file
     fn calculate_relative_path(from_path: &str, to_path: &str) -> String {
         use std::path::Path;
@@ -192,11 +181,6 @@ impl WebsiteMirror {
         updated_content
     }
 
-    /// Convert JPEG/PNG images to WebP format with good quality lossy compression
-    fn convert_to_webp(&self, image_data: &[u8], original_url: &str) -> Result<Vec<u8>> {
-        Self::convert_to_webp_static(image_data, original_url)
-    }
-
     /// Static version for use in functions without self access
     fn convert_to_webp_static(image_data: &[u8], original_url: &str) -> Result<Vec<u8>> {
         // Decode the image
@@ -259,7 +243,6 @@ impl WebsiteMirror {
         let client = Self::build_http_client()?;
         let file_manager = FileManager::new(output_dir)?;
         let html_parser = HtmlParser::new(base_url)?;
-        let url_mapper = UrlMapper::new(convert_to_webp)?;
 
         Ok(Self {
             base_url: base_url.to_string(),
@@ -273,7 +256,6 @@ impl WebsiteMirror {
             client,
             file_manager,
             html_parser,
-            url_mapper,
             visited_urls: Arc::new(Mutex::new(HashSet::new())),
             download_queue: Arc::new(Mutex::new(BinaryHeap::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
@@ -356,13 +338,11 @@ impl WebsiteMirror {
                 if let Err(e) = Self::download_and_process_url(
                     &client,
                     &file_manager,
-                    &html_parser,
                     &url,
                     depth,
                     &visited_urls,
                     &download_queue,
                     &download_cache,
-                    download_external,
                     &base_url,
                     priority,
                     resource_type,
@@ -604,19 +584,171 @@ impl WebsiteMirror {
         Ok(url_mappings)
     }
 
-    async fn download_and_process_url(
+    async fn download_and_process_html(
         client: &Client,
         file_manager: &FileManager,
-        _html_parser: &HtmlParser,
         url: &str,
         depth: usize,
         visited_urls: &Arc<Mutex<HashSet<String>>>,
         download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
         download_cache: &Arc<Mutex<HashMap<String, String>>>,
-        _download_external: bool,
+        base_url: &str,
+        only_resources: &Option<Vec<String>>,
+        convert_to_webp: bool,
+    ) -> Result<()> {
+        println!("📄 Processing HTML page: {}", url);
+
+        // Download the URL
+        let client_for_download = client.clone();
+        let response = match client_for_download.get(url).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("❌ Request failed: {}", e);
+                return Ok(());
+            }
+        };
+
+        if response.status() != StatusCode::OK {
+            eprintln!("⚠️  HTTP {} for {}", response.status(), url);
+            return Ok(());
+        }
+
+        let content = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("❌ Failed to read response body: {}", e);
+                return Ok(());
+            }
+        };
+
+        let html_content = String::from_utf8_lossy(&content);
+
+        // Create a new HTML parser with the current page's base URL
+        let page_html_parser = HtmlParser::new(url)?;
+        let url_mapper = UrlMapper::new(convert_to_webp)?;
+        let html_rewriter = HtmlRewriter::new();
+
+        // Process resources and get URL mappings
+        let url_mappings = Self::process_html_resources(
+            client,
+            file_manager,
+            &page_html_parser,
+            &url_mapper,
+            &html_content,
+            url,
+            depth,
+            visited_urls,
+            download_queue,
+            download_cache,
+            base_url,
+            only_resources,
+            convert_to_webp,
+        )
+        .await?;
+
+        // Apply URL replacements using HtmlRewriter
+        let mut html_content_updated = html_rewriter.rewrite_urls(&html_content, &url_mappings);
+
+        // Additional comprehensive WebP extension replacement for any remaining image references
+        if convert_to_webp {
+            println!("🔍 Performing comprehensive WebP extension replacement...");
+            html_content_updated =
+                Self::perform_comprehensive_webp_replacement(&html_content_updated);
+        }
+
+        // Save the updated HTML with local paths for resources
+        let local_html_path = url_mapper.url_to_local_path(url, &ResourceType::Link)?;
+        println!("💾 Saving HTML to: {}", local_html_path.display());
+        let saved_path =
+            file_manager.save_file(&local_html_path, html_content_updated.as_bytes())?;
+        println!("✅ Saved HTML to: {}", saved_path.display());
+
+        Ok(())
+    }
+
+    async fn download_and_process_css(
+        client: &Client,
+        file_manager: &FileManager,
+        url: &str,
+        download_cache: &Arc<Mutex<HashMap<String, String>>>,
+        convert_to_webp: bool,
+    ) -> Result<()> {
+        println!("🎨 Processing CSS file: {}", url);
+
+        // Download the URL
+        let response = match client.get(url).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("❌ Request failed: {}", e);
+                return Ok(());
+            }
+        };
+
+        if response.status() != StatusCode::OK {
+            eprintln!("⚠️  HTTP {} for {}", response.status(), url);
+            return Ok(());
+        }
+
+        let content = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("❌ Failed to read response body: {}", e);
+                return Ok(());
+            }
+        };
+
+        // Process CSS files to extract background images
+        let css_content = String::from_utf8_lossy(&content);
+        let page_html_parser = HtmlParser::new(url)?;
+
+        // Extract background images from CSS
+        let mut background_resources = Vec::new();
+        page_html_parser
+            .extract_background_images_from_css(&css_content, &mut background_resources);
+
+        // Download background images with normal priority (after CSS/JS)
+        for resource in &background_resources {
+            println!("📥 Processing background image: {}", resource.original_url);
+            let url_mapper = UrlMapper::new(convert_to_webp)?;
+            if let Err(e) = Self::download_resource(
+                client,
+                file_manager,
+                &url_mapper,
+                &resource.absolute_url,
+                &ResourceType::Image,
+                download_cache,
+                convert_to_webp,
+            )
+            .await
+            {
+                eprintln!(
+                    "⚠️  Failed to download background image {}: {}",
+                    resource.absolute_url, e
+                );
+            }
+        }
+
+        // Save the CSS file
+        let url_mapper = UrlMapper::new(convert_to_webp)?;
+        let local_path = url_mapper.url_to_local_path(url, &ResourceType::CSS)?;
+        println!("💾 Saving CSS to: {}", local_path.display());
+        let saved_path = file_manager.save_file(&local_path, &content)?;
+        println!("✅ Saved CSS to: {:?}", saved_path);
+
+        Ok(())
+    }
+
+    async fn download_and_process_url(
+        client: &Client,
+        file_manager: &FileManager,
+        url: &str,
+        depth: usize,
+        visited_urls: &Arc<Mutex<HashSet<String>>>,
+        download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
+        download_cache: &Arc<Mutex<HashMap<String, String>>>,
         base_url: &str,
         priority: DownloadPriority,
-        _resource_type: Option<ResourceType>,
+        resource_type: Option<ResourceType>,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
     ) -> Result<()> {
@@ -637,167 +769,50 @@ impl WebsiteMirror {
         };
         println!("{} Downloading: {} (depth: {})", priority_str, url, depth);
 
-        // Download the URL
-        println!("🌐 Sending request to: {}", url);
-        let response = match client.get(url).send().await {
-            Ok(resp) => resp,
-            Err(e) => {
-                eprintln!("❌ Request failed: {}", e);
-                return Ok(());
-            }
-        };
-
-        println!("📡 Response status: {}", response.status());
-
-        if response.status() != StatusCode::OK {
-            eprintln!("⚠️  HTTP {} for {}", response.status(), url);
-            return Ok(());
-        }
-
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("text/html")
-            .to_string();
-
-        let content = match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                eprintln!("❌ Failed to read response body: {}", e);
-                return Ok(());
-            }
-        };
-
-        // Determine content type
-        let is_html = content_type.contains("text/html")
-            || content.starts_with(b"<!DOCTYPE")
-            || content.starts_with(b"<html");
-        let is_css = content_type.contains("text/css") || url.ends_with(".css");
-
-        println!(
-            "🔍 Content type: {}, is_html: {}, is_css: {}",
-            content_type, is_html, is_css
-        );
-        println!(
-            "🔍 Content preview: {}",
-            String::from_utf8_lossy(&content[..content.len().min(100)])
-        );
-
-        if is_html {
-            // Parse HTML and extract resources
-            let html_content = String::from_utf8_lossy(&content);
-
-            // Create a new HTML parser with the current page's base URL
-            let page_html_parser = HtmlParser::new(url)?;
-            let url_mapper = UrlMapper::new(convert_to_webp)?;
-            let html_rewriter = HtmlRewriter::new();
-
-            // Process resources and get URL mappings
-            let url_mappings = Self::process_html_resources(
-                client,
-                file_manager,
-                &page_html_parser,
-                &url_mapper,
-                &html_content,
-                url,
-                depth,
-                visited_urls,
-                download_queue,
-                download_cache,
-                base_url,
-                only_resources,
-                convert_to_webp,
-            )
-            .await?;
-
-            // Apply URL replacements using HtmlRewriter
-            let mut html_content_updated = html_rewriter.rewrite_urls(&html_content, &url_mappings);
-
-            // Additional comprehensive WebP extension replacement for any remaining image references
-            if convert_to_webp {
-                println!("🔍 Performing comprehensive WebP extension replacement...");
-                html_content_updated =
-                    Self::perform_comprehensive_webp_replacement(&html_content_updated);
-            }
-
-            // Debug: Show a preview of the updated HTML content
-            println!("🔍 HTML content preview (first 500 chars):");
-            let preview = html_content_updated.chars().take(500).collect::<String>();
-            println!("{}", preview);
-
-            // Save the updated HTML with local paths for resources
-            let local_html_path = url_mapper.url_to_local_path(url, &ResourceType::Link)?;
-            println!("💾 Saving HTML to: {}", local_html_path.display());
-            println!("🔍 DEBUG: local_html_path = {:?}", local_html_path);
-            println!(
-                "🔍 DEBUG: file_manager.base_dir() = {:?}",
-                file_manager.base_dir()
-            );
-            let saved_path =
-                file_manager.save_file(&local_html_path, html_content_updated.as_bytes())?;
-            println!("✅ Saved HTML to: {}", saved_path.display());
-
-            // Note: Links are now processed in the priority-based resource processing above
-            // This section is no longer needed as links are queued with proper priority
-        } else if is_css {
-            // Process CSS files to extract background images
-            let css_content = String::from_utf8_lossy(&content);
-            let page_html_parser = HtmlParser::new(url)?;
-
-            // Extract background images from CSS
-            let mut background_resources = Vec::new();
-            page_html_parser
-                .extract_background_images_from_css(&css_content, &mut background_resources);
-
-            // Download background images with normal priority (after CSS/JS)
-            for resource in &background_resources {
-                // Always download background images from any site
-                // This ensures the CSS renders without 404 errors
-                println!(
-                    "📥 Processing NORMAL background image: {}",
-                    resource.original_url
-                );
-                let url_mapper = UrlMapper::new(convert_to_webp)?;
-                if let Err(e) = Self::download_resource(
+        // Route to appropriate handler based on resource type
+        match resource_type {
+            Some(ResourceType::Link) | None => {
+                // HTML page
+                Self::download_and_process_html(
                     client,
                     file_manager,
-                    &url_mapper,
-                    &resource.absolute_url,
-                    &ResourceType::Image,
+                    url,
+                    depth,
+                    visited_urls,
+                    download_queue,
+                    download_cache,
+                    base_url,
+                    only_resources,
+                    convert_to_webp,
+                )
+                .await?;
+            }
+            Some(ResourceType::CSS) => {
+                // CSS file
+                Self::download_and_process_css(
+                    client,
+                    file_manager,
+                    url,
                     download_cache,
                     convert_to_webp,
                 )
-                .await
-                {
-                    eprintln!(
-                        "⚠️  Failed to download background image {}: {}",
-                        resource.absolute_url, e
-                    );
-                }
+                .await?;
             }
-
-            // Save the CSS file
-            let url_mapper = UrlMapper::new(convert_to_webp)?;
-            let local_path = url_mapper.url_to_local_path(url, &ResourceType::CSS)?;
-            println!("💾 Saving CSS to: {}", local_path.display());
-            let saved_path = file_manager.save_file(&local_path, &content)?;
-            println!("✅ Saved CSS to: {:?}", saved_path);
-        } else {
-            // Save non-HTML content as-is
-            let url_mapper = UrlMapper::new(convert_to_webp)?;
-            // Determine resource type from URL/content
-            let resource_type = if url.ends_with(".js") {
-                ResourceType::JavaScript
-            } else if url.ends_with(".jpg") || url.ends_with(".png") || url.ends_with(".gif") {
-                ResourceType::Image
-            } else {
-                ResourceType::Other
-            };
-            let local_path = url_mapper.url_to_local_path(url, &resource_type)?;
-            println!("💾 Saving non-HTML to: {}", local_path.display());
-            let saved_path = file_manager.save_file(&local_path, &content)?;
-            println!("✅ Saved non-HTML to: {:?}", saved_path);
+            Some(resource_type) => {
+                // Other resources (JS, images, etc.) - just download without processing
+                println!("📦 Processing resource: {}", url);
+                let url_mapper = UrlMapper::new(convert_to_webp)?;
+                Self::download_resource(
+                    client,
+                    file_manager,
+                    &url_mapper,
+                    url,
+                    &resource_type,
+                    download_cache,
+                    convert_to_webp,
+                )
+                .await?;
+            }
         }
 
         println!("✅ Downloaded: {}", url);
