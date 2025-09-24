@@ -535,12 +535,9 @@ impl WebsiteMirror {
 
                         // Resolve the relative path from the HTML
                         let local_path = if resource.absolute_url.starts_with("http") {
-                            // Shouldn't happen in existing_file_mode
-                            log::error!(
-                                "Unexpected http URL in existing file: {}",
-                                resource.absolute_url
-                            );
-                            continue; // Skip this one
+                            // This is an external URL that wasn't rewritten (because it's external)
+                            // We should skip it silently
+                            continue; // Skip external links
                         } else {
                             // Use path joining to resolve relative paths properly
                             let path = std::path::Path::new(current_dir.as_ref())
@@ -1227,9 +1224,6 @@ impl WebsiteMirror {
                 cached_path
             );
             // Track as skipped in run logger
-            if let Some(ref logger) = run_logger {
-                logger.track_skipped();
-            }
             return Ok(ProcessResult::SkippedAlreadyExists);
         }
 

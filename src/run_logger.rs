@@ -6,18 +6,18 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::mirror_state::MirrorState;
 
 /// Runtime statistics for the current run only
 #[derive(Debug, Default, Clone)]
 pub struct RunStats {
-    pub downloaded: usize,  // Files actually downloaded this run
-    pub skipped: usize,     // Files skipped (already existed)
-    pub errors: usize,      // Errors this run
-    pub bytes: u64,         // Bytes downloaded this run
+    pub downloaded: usize, // Files actually downloaded this run
+    pub skipped: usize,    // Files skipped (already existed)
+    pub errors: usize,     // Errors this run
+    pub bytes: u64,        // Bytes downloaded this run
 }
 
 /// A custom logger that writes to both terminal and file
@@ -28,7 +28,7 @@ pub struct RunLogger {
     mirror_state: Arc<Mutex<Option<Arc<MirrorState>>>>,
     multi_progress: MultiProgress,
     stats_bar: ProgressBar,
-    run_stats: Arc<Mutex<RunStats>>,  // Stats for this run only
+    run_stats: Arc<Mutex<RunStats>>, // Stats for this run only
 }
 
 impl RunLogger {
@@ -36,7 +36,10 @@ impl RunLogger {
     pub fn init(output_dir: &Path) -> Result<Self> {
         // Create run directory with timestamp
         let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S");
-        let run_dir = output_dir.join(".mirror").join("runs").join(timestamp.to_string());
+        let run_dir = output_dir
+            .join(".mirror")
+            .join("runs")
+            .join(timestamp.to_string());
         fs::create_dir_all(&run_dir)?;
 
         // Create log file
@@ -49,12 +52,7 @@ impl RunLogger {
 
         // Create a sticky stats bar at the top
         let stats_bar = multi_progress.add(ProgressBar::new(0));
-        stats_bar.set_style(
-            ProgressStyle::with_template(
-                "{msg}"
-            )
-            .unwrap()
-        );
+        stats_bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
         stats_bar.set_message("📊 Initializing mirror...");
 
         // Clone for the logger closure
@@ -80,12 +78,8 @@ impl RunLogger {
                 // Write to file (plain text with timestamp)
                 if let Ok(mut file) = file_for_logger.lock() {
                     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-                    let file_msg = format!(
-                        "[{}] [{}] {}\n",
-                        timestamp,
-                        record.level(),
-                        record.args()
-                    );
+                    let file_msg =
+                        format!("[{}] [{}] {}\n", timestamp, record.level(), record.args());
                     let _ = file.write_all(file_msg.as_bytes());
                     let _ = file.flush();
                 }
@@ -103,8 +97,13 @@ impl RunLogger {
                  [{}] [INFO] Timestamp: {}\n\
                  [{}] [INFO] Log directory: {}\n\
                  [{}] [INFO] ========================================\n",
-                timestamp, timestamp, timestamp, timestamp,
-                timestamp, run_dir.display(), timestamp
+                timestamp,
+                timestamp,
+                timestamp,
+                timestamp,
+                timestamp,
+                run_dir.display(),
+                timestamp
             );
             let _ = file.write_all(msg.as_bytes());
             let _ = file.flush();
@@ -163,30 +162,29 @@ impl RunLogger {
         let run_stats = Arc::clone(&self.run_stats);
         let start_time = self.start_time;
 
-        thread::spawn(move || {
-            loop {
-                thread::sleep(Duration::from_millis(500));
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(500));
 
-                let elapsed = start_time.elapsed();
-                let duration = format!(
-                    "{:02}:{:02}:{:02}",
-                    elapsed.as_secs() / 3600,
-                    (elapsed.as_secs() % 3600) / 60,
-                    elapsed.as_secs() % 60
-                );
+            let elapsed = start_time.elapsed();
+            let duration = format!(
+                "{:02}:{:02}:{:02}",
+                elapsed.as_secs() / 3600,
+                (elapsed.as_secs() % 3600) / 60,
+                elapsed.as_secs() % 60
+            );
 
-                let run = run_stats.lock().unwrap().clone();
+            let run = run_stats.lock().unwrap().clone();
 
-                let message = if let Some(ref state) = *mirror_state.lock().unwrap() {
-                    let stats = state.get_statistics();
-                    let downloads = &stats.downloads;
-                    let total_success = downloads.html.success +
-                                       downloads.css.success +
-                                       downloads.js.success +
-                                       downloads.images.success +
-                                       downloads.other.success;
+            let message = if let Some(ref state) = *mirror_state.lock().unwrap() {
+                let stats = state.get_statistics();
+                let downloads = &stats.downloads;
+                let total_success = downloads.html.success
+                    + downloads.css.success
+                    + downloads.js.success
+                    + downloads.images.success
+                    + downloads.other.success;
 
-                    format!(
+                format!(
                         "⏱  {} │ THIS RUN: ⬇️  {} new │ ⏭️  {} skipped │ ❌ {} errors │ 💾 {} │ TOTAL: 📁 {} files │ 💾 {}",
                         duration,
                         HumanCount(run.downloaded as u64),
@@ -196,12 +194,11 @@ impl RunLogger {
                         HumanCount(total_success as u64),
                         HumanBytes(stats.total_bytes)
                     )
-                } else {
-                    format!("⏱  {} │ Waiting for mirror state...", duration)
-                };
+            } else {
+                format!("⏱  {} │ Waiting for mirror state...", duration)
+            };
 
-                stats_bar.set_message(message);
-            }
+            stats_bar.set_message(message);
         });
     }
 
@@ -209,17 +206,23 @@ impl RunLogger {
     pub fn write_summary(&self, summary: RunSummary) -> Result<()> {
         // Print final summary to terminal
         println!("\n========================================");
-        println!("Run Summary");
+        println!("Site Summary");
         println!("========================================");
         println!("Duration: {}", summary.duration);
-        println!("Total downloads: {} files", HumanCount(summary.successful_downloads as u64));
+        println!(
+            "Total files: {}",
+            HumanCount(summary.successful_downloads as u64)
+        );
         println!("  HTML pages: {}", HumanCount(summary.pages_crawled as u64));
         println!("  CSS files: {}", HumanCount(summary.css_files as u64));
         println!("  JS files: {}", HumanCount(summary.js_files as u64));
         println!("  Images: {}", HumanCount(summary.images as u64));
         println!("  Other: {}", HumanCount(summary.other_files as u64));
         if summary.failed_downloads > 0 {
-            println!("Failed downloads: {}", HumanCount(summary.failed_downloads as u64));
+            println!(
+                "Failed downloads: {}",
+                HumanCount(summary.failed_downloads as u64)
+            );
         }
         println!("Total size: {}", HumanBytes(summary.total_bytes));
         println!("========================================");
@@ -229,10 +232,10 @@ impl RunLogger {
             let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
             let msg = format!(
                 "[{}] [INFO] ========================================\n\
-                 [{}] [INFO] Run Summary\n\
+                 [{}] [INFO] Site Summary\n\
                  [{}] [INFO] ========================================\n\
                  [{}] [INFO] Duration: {}\n\
-                 [{}] [INFO] Total downloads: {} files\n\
+                 [{}] [INFO] Total files: {}\n\
                  [{}] [INFO]   HTML pages: {}\n\
                  [{}] [INFO]   CSS files: {}\n\
                  [{}] [INFO]   JS files: {}\n\
@@ -240,23 +243,34 @@ impl RunLogger {
                  [{}] [INFO]   Other: {}\n\
                  [{}] [INFO] Failed downloads: {}\n\
                  [{}] [INFO] Total size: {} ({} bytes)\n",
-                timestamp, timestamp, timestamp, timestamp, summary.duration,
-                timestamp, HumanCount(summary.successful_downloads as u64),
-                timestamp, HumanCount(summary.pages_crawled as u64),
-                timestamp, HumanCount(summary.css_files as u64),
-                timestamp, HumanCount(summary.js_files as u64),
-                timestamp, HumanCount(summary.images as u64),
-                timestamp, HumanCount(summary.other_files as u64),
-                timestamp, HumanCount(summary.failed_downloads as u64),
-                timestamp, HumanBytes(summary.total_bytes), summary.total_bytes
+                timestamp,
+                timestamp,
+                timestamp,
+                timestamp,
+                summary.duration,
+                timestamp,
+                HumanCount(summary.successful_downloads as u64),
+                timestamp,
+                HumanCount(summary.pages_crawled as u64),
+                timestamp,
+                HumanCount(summary.css_files as u64),
+                timestamp,
+                HumanCount(summary.js_files as u64),
+                timestamp,
+                HumanCount(summary.images as u64),
+                timestamp,
+                HumanCount(summary.other_files as u64),
+                timestamp,
+                HumanCount(summary.failed_downloads as u64),
+                timestamp,
+                HumanBytes(summary.total_bytes),
+                summary.total_bytes
             );
             let _ = file.write_all(msg.as_bytes());
 
             if !summary.errors.is_empty() {
-                let errors_msg = format!(
-                    "[{}] [INFO] Errors: {}\n",
-                    timestamp, summary.errors.len()
-                );
+                let errors_msg =
+                    format!("[{}] [INFO] Errors: {}\n", timestamp, summary.errors.len());
                 let _ = file.write_all(errors_msg.as_bytes());
                 for error in &summary.errors {
                     let error_msg = format!("[{}] [ERROR]   - {}\n", timestamp, error);
