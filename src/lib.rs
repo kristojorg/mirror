@@ -3,6 +3,8 @@ pub mod downloader;
 pub mod file_manager;
 pub mod html_parser;
 pub mod html_rewriter;
+pub mod run_logger;
+pub mod url_map_cache;
 pub mod url_mapper;
 
 // Re-export main types for convenience

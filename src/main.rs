@@ -1,11 +1,19 @@
 use anyhow::Result;
 use clap::Parser;
+use chrono::Local;
+use std::time::Instant;
 
-use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror};
+use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror, run_logger::{RunLogger, RunSummary}};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let start_time = Instant::now();
+    let start_time_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
     let args = MirrorCommand::parse();
+
+    // Initialize logging
+    let logger = RunLogger::init(&args.output_dir)?;
 
     // Handle full mirror option
     let (max_depth, max_concurrent, ignore_robots, download_external) = if args.full_mirror {
@@ -32,10 +40,46 @@ async fn main() -> Result<()> {
         args.convert_to_webp,
     )?;
 
-    mirror.mirror_website().await?;
+    // Perform the mirroring
+    let result = mirror.mirror_website().await;
 
-    println!("✅ Website mirroring completed successfully!");
-    Ok(())
+    // Calculate duration
+    let duration = start_time.elapsed();
+    let duration_str = format!(
+        "{}h {}m {}s",
+        duration.as_secs() / 3600,
+        (duration.as_secs() % 3600) / 60,
+        duration.as_secs() % 60
+    );
+
+    // Get statistics from the mirror
+    let stats = mirror.get_statistics();
+
+    // Create summary
+    let summary = RunSummary {
+        start_time: start_time_str,
+        end_time: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        duration: duration_str,
+        base_url: args.url.clone(),
+        pages_crawled: stats.pages_crawled,
+        total_resources: stats.total_resources,
+        successful_downloads: stats.successful_downloads,
+        failed_downloads: stats.failed_downloads,
+        total_bytes: 0, // TODO: Track bytes downloaded
+        errors: stats.errors,
+    };
+
+    // Write summary
+    logger.write_summary(summary)?;
+
+    // Log final status
+    if result.is_ok() {
+        log::info!("✅ Website mirroring completed successfully!");
+    } else {
+        log::error!("❌ Website mirroring completed with errors: {:?}", result);
+    }
+
+    result
 }
 
 #[cfg(test)]
