@@ -286,6 +286,11 @@ impl WebsiteMirror {
         self.mirror_state.get_statistics()
     }
 
+    /// Get a reference to the MirrorState for sharing
+    pub fn get_mirror_state(&self) -> Arc<MirrorState> {
+        Arc::new(self.mirror_state.clone())
+    }
+
     pub async fn mirror_website(&mut self) -> Result<()> {
         log::info!(
             "🚀 Starting website mirroring for: {}",
@@ -383,9 +388,6 @@ impl WebsiteMirror {
         }
 
         progress_bar.finish_with_message("✅ All downloads completed!");
-
-        let visited_count = self.visited_urls.lock().unwrap().len();
-        log::info!("📊 Total pages downloaded: {}", visited_count);
 
         Ok(())
     }

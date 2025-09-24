@@ -1,15 +1,21 @@
 use anyhow::Result;
 use chrono::Local;
+use indicatif::{HumanBytes, HumanCount};
 use log::{Level, LevelFilter};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use crate::mirror_state::MirrorState;
 
 /// A custom logger that writes to both terminal and file
 pub struct RunLogger {
     log_file: Arc<Mutex<File>>,
     run_dir: PathBuf,
+    start_time: Instant,
+    mirror_state: Arc<Mutex<Option<Arc<MirrorState>>>>,
 }
 
 impl RunLogger {
@@ -61,15 +67,27 @@ impl RunLogger {
             })
             .init();
 
-        log::info!("========================================");
-        log::info!("Website Mirror - Run Started");
-        log::info!("Timestamp: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
-        log::info!("Log directory: {}", run_dir.display());
-        log::info!("========================================");
+        // Log initial messages to file only
+        if let Ok(mut file) = log_file.lock() {
+            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+            let msg = format!(
+                "[{}] [INFO] ========================================\n\
+                 [{}] [INFO] Website Mirror - Run Started\n\
+                 [{}] [INFO] Timestamp: {}\n\
+                 [{}] [INFO] Log directory: {}\n\
+                 [{}] [INFO] ========================================\n",
+                timestamp, timestamp, timestamp, timestamp,
+                timestamp, run_dir.display(), timestamp
+            );
+            let _ = file.write_all(msg.as_bytes());
+            let _ = file.flush();
+        }
 
         Ok(RunLogger {
             log_file,
             run_dir,
+            start_time: Instant::now(),
+            mirror_state: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -78,27 +96,79 @@ impl RunLogger {
         &self.run_dir
     }
 
+    /// Set the mirror state for pulling statistics
+    pub fn set_mirror_state(&self, state: Arc<MirrorState>) {
+        let mut mirror_state = self.mirror_state.lock().unwrap();
+        *mirror_state = Some(state);
+    }
+
     /// Write summary at the end of the run
     pub fn write_summary(&self, summary: RunSummary) -> Result<()> {
-        // Log summary to console and file
-        log::info!("========================================");
-        log::info!("Run Summary");
-        log::info!("========================================");
-        log::info!("Duration: {}", summary.duration);
-        log::info!("Pages crawled: {}", summary.pages_crawled);
-        log::info!("Total resources: {}", summary.total_resources);
-        log::info!("Successful downloads: {}", summary.successful_downloads);
-        log::info!("Failed downloads: {}", summary.failed_downloads);
-        log::info!("Total size: {} bytes", summary.total_bytes);
+        // Print final summary to terminal
+        println!("\n========================================");
+        println!("Run Summary");
+        println!("========================================");
+        println!("Duration: {}", summary.duration);
+        println!("Total downloads: {} files", HumanCount(summary.successful_downloads as u64));
+        println!("  HTML pages: {}", HumanCount(summary.pages_crawled as u64));
+        println!("  CSS files: {}", HumanCount(summary.css_files as u64));
+        println!("  JS files: {}", HumanCount(summary.js_files as u64));
+        println!("  Images: {}", HumanCount(summary.images as u64));
+        println!("  Other: {}", HumanCount(summary.other_files as u64));
+        if summary.failed_downloads > 0 {
+            println!("Failed downloads: {}", HumanCount(summary.failed_downloads as u64));
+        }
+        println!("Total size: {}", HumanBytes(summary.total_bytes));
+        println!("========================================");
 
-        if !summary.errors.is_empty() {
-            log::info!("Errors: {}", summary.errors.len());
-            for error in &summary.errors {
-                log::error!("  - {}", error);
+        // Write detailed summary to file
+        if let Ok(mut file) = self.log_file.lock() {
+            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+            let msg = format!(
+                "[{}] [INFO] ========================================\n\
+                 [{}] [INFO] Run Summary\n\
+                 [{}] [INFO] ========================================\n\
+                 [{}] [INFO] Duration: {}\n\
+                 [{}] [INFO] Total downloads: {} files\n\
+                 [{}] [INFO]   HTML pages: {}\n\
+                 [{}] [INFO]   CSS files: {}\n\
+                 [{}] [INFO]   JS files: {}\n\
+                 [{}] [INFO]   Images: {}\n\
+                 [{}] [INFO]   Other: {}\n\
+                 [{}] [INFO] Failed downloads: {}\n\
+                 [{}] [INFO] Total size: {} ({} bytes)\n",
+                timestamp, timestamp, timestamp, timestamp, summary.duration,
+                timestamp, HumanCount(summary.successful_downloads as u64),
+                timestamp, HumanCount(summary.pages_crawled as u64),
+                timestamp, HumanCount(summary.css_files as u64),
+                timestamp, HumanCount(summary.js_files as u64),
+                timestamp, HumanCount(summary.images as u64),
+                timestamp, HumanCount(summary.other_files as u64),
+                timestamp, HumanCount(summary.failed_downloads as u64),
+                timestamp, HumanBytes(summary.total_bytes), summary.total_bytes
+            );
+            let _ = file.write_all(msg.as_bytes());
+
+            if !summary.errors.is_empty() {
+                let errors_msg = format!(
+                    "[{}] [INFO] Errors: {}\n",
+                    timestamp, summary.errors.len()
+                );
+                let _ = file.write_all(errors_msg.as_bytes());
+                for error in &summary.errors {
+                    let error_msg = format!("[{}] [ERROR]   - {}\n", timestamp, error);
+                    let _ = file.write_all(error_msg.as_bytes());
+                }
             }
+
+            let separator = format!(
+                "[{}] [INFO] ========================================\n",
+                timestamp
+            );
+            let _ = file.write_all(separator.as_bytes());
+            let _ = file.flush();
         }
 
-        log::info!("========================================");
         Ok(())
     }
 }
@@ -109,7 +179,10 @@ pub struct RunSummary {
     pub duration: String,
     pub base_url: String,
     pub pages_crawled: usize,
-    pub total_resources: usize,
+    pub css_files: usize,
+    pub js_files: usize,
+    pub images: usize,
+    pub other_files: usize,
     pub successful_downloads: usize,
     pub failed_downloads: usize,
     pub total_bytes: u64,

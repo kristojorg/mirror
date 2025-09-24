@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use chrono::Local;
+use std::sync::Arc;
 use std::time::Instant;
 
 use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror, run_logger::{RunLogger, RunSummary}};
@@ -40,6 +41,10 @@ async fn main() -> Result<()> {
         args.convert_to_webp,
     )?;
 
+    // Share the MirrorState with the logger for final summary
+    let logger = Arc::new(logger);
+    logger.set_mirror_state(mirror.get_mirror_state());
+
     // Perform the mirroring
     let result = mirror.mirror_website().await;
 
@@ -75,7 +80,10 @@ async fn main() -> Result<()> {
         duration: duration_str,
         base_url: args.url.clone(),
         pages_crawled: mirror_stats.downloads.html.success,
-        total_resources: total_successful,
+        css_files: mirror_stats.downloads.css.success,
+        js_files: mirror_stats.downloads.js.success,
+        images: mirror_stats.downloads.images.success,
+        other_files: mirror_stats.downloads.other.success,
         successful_downloads: total_successful,
         failed_downloads: total_failed,
         total_bytes: mirror_stats.total_bytes,
