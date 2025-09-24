@@ -1,10 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
 use chrono::Local;
-use std::sync::Arc;
 use std::time::Instant;
 
-use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror, run_logger::{RunLogger, RunSummary}};
+use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror, run_logger::RunSummary};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -12,9 +11,6 @@ async fn main() -> Result<()> {
     let start_time_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     let args = MirrorCommand::parse();
-
-    // Initialize logging
-    let logger = RunLogger::init(&args.output_dir)?;
 
     // Handle full mirror option
     let (max_depth, max_concurrent, ignore_robots, download_external) = if args.full_mirror {
@@ -40,10 +36,6 @@ async fn main() -> Result<()> {
         args.only_resources.clone(),
         args.convert_to_webp,
     )?;
-
-    // Share the MirrorState with the logger for final summary
-    let logger = Arc::new(logger);
-    logger.set_mirror_state(mirror.get_mirror_state());
 
     // Perform the mirroring
     let result = mirror.mirror_website().await;
@@ -90,7 +82,8 @@ async fn main() -> Result<()> {
         errors: Vec::new(), // Error messages are tracked in the state itself
     };
 
-    // Write summary
+    // Write summary using the logger from the mirror
+    let logger = mirror.get_run_logger();
     logger.write_summary(summary)?;
 
     // Log final status

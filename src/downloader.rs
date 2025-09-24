@@ -12,6 +12,7 @@ use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
 use crate::html_rewriter::HtmlRewriter;
 use crate::mirror_state::MirrorState;
+use crate::run_logger::RunLogger;
 use crate::url_mapper::UrlMapper;
 use webp::Encoder;
 
@@ -87,6 +88,7 @@ pub struct WebsiteMirror {
     visited_urls: Arc<Mutex<HashSet<String>>>,
     download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>,
     mirror_state: MirrorState, // Persistent state and statistics tracking
+    run_logger: Arc<RunLogger>, // Runtime logger for tracking this run
 }
 
 impl WebsiteMirror {
@@ -252,6 +254,13 @@ impl WebsiteMirror {
         let html_parser = HtmlParser::new(base_url)?;
         let mirror_state = MirrorState::new(output_dir)?;
 
+        // Create the run logger internally
+        let run_logger = RunLogger::init(output_dir)?;
+        let run_logger = Arc::new(run_logger);
+
+        // Share the mirror state with the logger
+        run_logger.set_mirror_state(Arc::new(mirror_state.clone()));
+
         Ok(Self {
             base_url: base_url.to_string(),
             output_dir: output_dir.to_path_buf(),
@@ -267,6 +276,7 @@ impl WebsiteMirror {
             visited_urls: Arc::new(Mutex::new(HashSet::new())),
             download_queue: Arc::new(Mutex::new(BinaryHeap::new())),
             mirror_state,
+            run_logger,
         })
     }
 
@@ -289,6 +299,11 @@ impl WebsiteMirror {
     /// Get a reference to the MirrorState for sharing
     pub fn get_mirror_state(&self) -> Arc<MirrorState> {
         Arc::new(self.mirror_state.clone())
+    }
+
+    /// Get a reference to the RunLogger for summary writing
+    pub fn get_run_logger(&self) -> Arc<RunLogger> {
+        self.run_logger.clone()
     }
 
     pub async fn mirror_website(&mut self) -> Result<()> {
@@ -347,6 +362,7 @@ impl WebsiteMirror {
                 progress_bar.set_message(format!("Downloading: {}", url));
 
                 let base_url = self.base_url.clone();
+                let run_logger = Some(self.run_logger.clone());
 
                 // Process the download directly instead of spawning a task
                 log::info!("🚀 Processing download for: {}", url);
@@ -363,6 +379,7 @@ impl WebsiteMirror {
                     resource_type,
                     &self.only_resources,
                     self.convert_to_webp,
+                    &run_logger,
                 )
                 .await
                 {
@@ -457,6 +474,7 @@ impl WebsiteMirror {
         base_url: &str,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
+        run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<HashMap<String, String>> {
         let resources = page_html_parser.extract_resources(html_content)?;
         let mut url_mappings = HashMap::new();
@@ -554,6 +572,7 @@ impl WebsiteMirror {
                 &resource.resource_type,
                 mirror_state,
                 convert_to_webp,
+                run_logger,
             )
             .await
             {
@@ -643,6 +662,7 @@ impl WebsiteMirror {
                 &resource.resource_type,
                 mirror_state,
                 convert_to_webp,
+                run_logger,
             )
             .await
             {
@@ -685,6 +705,7 @@ impl WebsiteMirror {
         base_url: &str,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
+        run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<()> {
         log::info!("📄 Processing HTML page: {}", url);
 
@@ -698,6 +719,11 @@ impl WebsiteMirror {
                 "📂 HTML already exists on disk: {}",
                 local_html_path.display()
             );
+
+            // Track as skipped in run logger
+            if let Some(ref logger) = run_logger {
+                logger.track_skipped();
+            }
 
             // File already exists, should already be in the manifest from previous run
 
@@ -746,6 +772,10 @@ impl WebsiteMirror {
                     ResourceType::Link,
                     &format!("Request failed: {}", e),
                 )?;
+                // Track error in run logger
+                if let Some(ref logger) = run_logger {
+                    logger.track_error();
+                }
                 return Ok(());
             }
         };
@@ -784,6 +814,7 @@ impl WebsiteMirror {
             base_url,
             only_resources,
             convert_to_webp,
+            run_logger,
         )
         .await?;
 
@@ -813,6 +844,11 @@ impl WebsiteMirror {
             size_bytes,
         )?;
 
+        // Track downloaded in run logger
+        if let Some(ref logger) = run_logger {
+            logger.track_downloaded(size_bytes);
+        }
+
         Ok(())
     }
 
@@ -822,6 +858,7 @@ impl WebsiteMirror {
         url: &str,
         mirror_state: &MirrorState,
         convert_to_webp: bool,
+        run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<()> {
         log::info!("🎨 Processing CSS file: {}", url);
 
@@ -835,6 +872,10 @@ impl WebsiteMirror {
                 "⏭️  Skipping CSS (already exists on disk at {})",
                 local_path.display()
             );
+            // Track as skipped in run logger
+            if let Some(ref logger) = run_logger {
+                logger.track_skipped();
+            }
             return Ok(());
         }
 
@@ -848,6 +889,10 @@ impl WebsiteMirror {
                     ResourceType::CSS,
                     &format!("Request failed: {}", e),
                 )?;
+                // Track error in run logger
+                if let Some(ref logger) = run_logger {
+                    logger.track_error();
+                }
                 return Ok(());
             }
         };
@@ -886,6 +931,7 @@ impl WebsiteMirror {
                 &ResourceType::Image,
                 mirror_state,
                 convert_to_webp,
+                run_logger,
             )
             .await
             {
@@ -913,6 +959,11 @@ impl WebsiteMirror {
             size_bytes,
         )?;
 
+        // Track downloaded in run logger
+        if let Some(ref logger) = run_logger {
+            logger.track_downloaded(size_bytes);
+        }
+
         Ok(())
     }
 
@@ -929,6 +980,7 @@ impl WebsiteMirror {
         resource_type: Option<ResourceType>,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
+        run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<()> {
         // Check if already visited (normalize root URLs to avoid duplicates)
         {
@@ -962,6 +1014,7 @@ impl WebsiteMirror {
                     base_url,
                     only_resources,
                     convert_to_webp,
+                    run_logger,
                 )
                 .await?;
             }
@@ -973,6 +1026,7 @@ impl WebsiteMirror {
                     url,
                     mirror_state,
                     convert_to_webp,
+                    run_logger,
                 )
                 .await?;
             }
@@ -988,6 +1042,7 @@ impl WebsiteMirror {
                     &resource_type,
                     mirror_state,
                     convert_to_webp,
+                    run_logger,
                 )
                 .await?;
             }
@@ -1005,6 +1060,7 @@ impl WebsiteMirror {
         resource_type: &ResourceType,
         mirror_state: &MirrorState,
         convert_to_webp: bool,
+        run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<()> {
         // Check if already downloaded using cache
         if let Some(cached_path) = mirror_state.get_path(url) {
@@ -1013,6 +1069,10 @@ impl WebsiteMirror {
                 url,
                 cached_path
             );
+            // Track as skipped in run logger
+            if let Some(ref logger) = run_logger {
+                logger.track_skipped();
+            }
             return Ok(());
         }
 
@@ -1026,6 +1086,10 @@ impl WebsiteMirror {
                 url,
                 local_path.display()
             );
+            // Track as skipped in run logger
+            if let Some(ref logger) = run_logger {
+                logger.track_skipped();
+            }
             return Ok(());
         }
 
@@ -1064,6 +1128,10 @@ impl WebsiteMirror {
                     resource_type.clone(),
                     &format!("Request failed: {}", e),
                 )?;
+                // Track error in run logger
+                if let Some(ref logger) = run_logger {
+                    logger.track_error();
+                }
                 return Ok(());
             }
         };
@@ -1133,6 +1201,11 @@ impl WebsiteMirror {
             resource_type.clone(),
             size_bytes,
         )?;
+
+        // Track downloaded in run logger
+        if let Some(ref logger) = run_logger {
+            logger.track_downloaded(size_bytes);
+        }
 
         log::info!(
             "✅ Downloaded {} to: {}",

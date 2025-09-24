@@ -11,6 +11,15 @@ use std::thread;
 
 use crate::mirror_state::MirrorState;
 
+/// Runtime statistics for the current run only
+#[derive(Debug, Default, Clone)]
+pub struct RunStats {
+    pub downloaded: usize,  // Files actually downloaded this run
+    pub skipped: usize,     // Files skipped (already existed)
+    pub errors: usize,      // Errors this run
+    pub bytes: u64,         // Bytes downloaded this run
+}
+
 /// A custom logger that writes to both terminal and file
 pub struct RunLogger {
     log_file: Arc<Mutex<File>>,
@@ -19,6 +28,7 @@ pub struct RunLogger {
     mirror_state: Arc<Mutex<Option<Arc<MirrorState>>>>,
     multi_progress: MultiProgress,
     stats_bar: ProgressBar,
+    run_stats: Arc<Mutex<RunStats>>,  // Stats for this run only
 }
 
 impl RunLogger {
@@ -107,6 +117,7 @@ impl RunLogger {
             mirror_state: Arc::new(Mutex::new(None)),
             multi_progress,
             stats_bar,
+            run_stats: Arc::new(Mutex::new(RunStats::default())),
         };
 
         // Start the stats updater thread
@@ -126,10 +137,30 @@ impl RunLogger {
         *mirror_state = Some(state);
     }
 
+    /// Track a file that was actually downloaded this run
+    pub fn track_downloaded(&self, bytes: u64) {
+        let mut stats = self.run_stats.lock().unwrap();
+        stats.downloaded += 1;
+        stats.bytes += bytes;
+    }
+
+    /// Track a file that was skipped (already existed)
+    pub fn track_skipped(&self) {
+        let mut stats = self.run_stats.lock().unwrap();
+        stats.skipped += 1;
+    }
+
+    /// Track a download error this run
+    pub fn track_error(&self) {
+        let mut stats = self.run_stats.lock().unwrap();
+        stats.errors += 1;
+    }
+
     /// Start a background thread to update the stats display
     fn start_stats_updater(&self) {
         let stats_bar = self.stats_bar.clone();
         let mirror_state = Arc::clone(&self.mirror_state);
+        let run_stats = Arc::clone(&self.run_stats);
         let start_time = self.start_time;
 
         thread::spawn(move || {
@@ -144,6 +175,8 @@ impl RunLogger {
                     elapsed.as_secs() % 60
                 );
 
+                let run = run_stats.lock().unwrap().clone();
+
                 let message = if let Some(ref state) = *mirror_state.lock().unwrap() {
                     let stats = state.get_statistics();
                     let downloads = &stats.downloads;
@@ -152,22 +185,15 @@ impl RunLogger {
                                        downloads.js.success +
                                        downloads.images.success +
                                        downloads.other.success;
-                    let total_errors = downloads.html.error +
-                                      downloads.css.error +
-                                      downloads.js.error +
-                                      downloads.images.error +
-                                      downloads.other.error;
 
                     format!(
-                        "⏱  {} │ 🌐 {} URLs │ ✅ {} files │ 📄 HTML: {} │ 🎨 CSS: {} │ ⚡ JS: {} │ 🖼  Images: {} │ ❌ {} errors │ 💾 {}",
+                        "⏱  {} │ THIS RUN: ⬇️  {} new │ ⏭️  {} skipped │ ❌ {} errors │ 💾 {} │ TOTAL: 📁 {} files │ 💾 {}",
                         duration,
-                        HumanCount(stats.urls_discovered as u64),
+                        HumanCount(run.downloaded as u64),
+                        HumanCount(run.skipped as u64),
+                        run.errors,
+                        HumanBytes(run.bytes),
                         HumanCount(total_success as u64),
-                        downloads.html.success,
-                        downloads.css.success,
-                        downloads.js.success,
-                        downloads.images.success,
-                        total_errors,
                         HumanBytes(stats.total_bytes)
                     )
                 } else {
@@ -247,6 +273,16 @@ impl RunLogger {
         }
 
         Ok(())
+    }
+}
+
+impl std::fmt::Debug for RunLogger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunLogger")
+            .field("run_dir", &self.run_dir)
+            .field("start_time", &self.start_time)
+            .field("run_stats", &self.run_stats)
+            .finish()
     }
 }
 
