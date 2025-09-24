@@ -14,10 +14,7 @@ This is a Rust CLI utility called `website-mirror` that downloads static copies 
 # Build the project
 cargo build
 
-# Build for release (optimized)
-cargo build --release
-
-# Run tests
+# Run tests (not fully working currently)
 cargo test
 
 # Run specific test file
@@ -26,9 +23,6 @@ cargo test webp_extension_tests
 
 # Run with verbose output
 cargo test -- --nocapture
-
-# Run benchmarks
-cargo bench
 
 # Install globally
 cargo install --path .
@@ -73,6 +67,7 @@ cargo update
 - **`html_parser.rs`** - HTML parsing and resource extraction using html5ever
 - **`file_manager.rs`** - File system operations, directory management, and WebP conversion
 - **`lib.rs`** - Module exports and public API
+- **`mirror_state.rs`** - Tracking the status of each file and summary statistics to allow for crawl resumption and visibility into progress
 
 ### Key Components
 
@@ -95,10 +90,17 @@ cargo update
 
 ### Resource Processing Flow
 
-1. **Priority-based processing**: CSS/JS (critical) → HTML (high) → Images (normal)
+1. **Priority-based processing**: CSS/JS (critical, downloaded before the HTML page they're found on) → HTML (high) → Images (normal)
 2. **Smart caching**: Each unique URL downloaded only once
-3. **External resource handling**: Downloads from CDNs, AWS S3, etc. when `--download-external` enabled
-4. **Path resolution**: Converts all resource URLs to relative local paths
+3. **External resource handling**: Downloads from CDNs, AWS S3, etc.
+4. **Path resolution**: Converts all resource and HTML URLs to relative local paths, and keeps a log of the url -> local path map in the state file.
+
+### resumption
+
+It's possible to resume an interrupted download. For each url we want to download, the system will first check the disk to see if it exists already. If it already
+exists, it is assumed that all resources have also been downloaded, so they are not retried. However, we need to extract the links from the html and add them
+to the queue to continue crawling. The links will be in relative local path format however, so we turn them back into urls before queueing them by searching through
+the state file for the corresponding local path.
 
 ### Testing Strategy
 
@@ -113,7 +115,6 @@ cargo update
 - `--full-mirror`: Unlimited depth crawling with all external resources
 - `--only-resources [types]`: Filter to specific resource types (images, css, js, html)
 - `--convert-to-webp`: Convert JPEG/PNG to WebP for better compression
-- `--download-external`: Download resources from external domains
 - `--ignore-robots`: Bypass robots.txt restrictions
 
 ### Technical Capabilities
@@ -122,6 +123,7 @@ cargo update
 - **SSL/TLS support**: Handles modern certificate chains with rustls
 - **Concurrent downloads**: Configurable parallelism with proper backpressure
 - **Progress tracking**: Real-time status updates and resource type logging
+- **Resumption**: Ability to resume interrupted downloads from the last completed resource
 
 ## Dependencies
 
@@ -146,13 +148,6 @@ cargo update
 2. Add detection logic in `HtmlParser::extract_resources()`
 3. Update resource categorization in downloader priority system
 
-### Modifying Download Behavior
-- Core download logic is in `WebsiteMirror::download_resource()`
-- Caching mechanism in `WebsiteMirror::download_and_save_resource()`
-- Priority queue management in `WebsiteMirror::process_download_tasks()`
-
 ### Testing New Features
 - Add unit tests directly in the relevant module
-- Create integration tests in `tests/` for end-to-end workflows
-- Use `tempfile` crate for temporary test directories
 - Mock HTTP responses with `mockall` for isolated testing
