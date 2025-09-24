@@ -3,21 +3,26 @@
 ## Overview
 This document outlines the phased approach to implementing comprehensive logging, statistics tracking, and state management for the website-mirror tool. The goal is to provide visibility into long-running operations while maintaining simplicity.
 
-## Phase 1: Basic File Logging (CURRENT)
+## Phase 1: Basic File Logging ✅ COMPLETED
 **Goal**: Capture all existing output to log files without changing the current logging approach.
 
-### Implementation
-- Create run directories: `.mirror/runs/YYYY-MM-DD_HH-MM-SS/`
-- Redirect all println!/eprintln! output to both terminal and `log.txt`
-- Write a basic summary file at completion
-- Use the `log` crate with `env_logger` for filtering and `tee` for dual output
+### Implementation (DONE)
+- ✅ Create run directories: `.mirror/runs/YYYY-MM-DD_HH-MM-SS/`
+- ✅ Redirect all println!/eprintln! output to both terminal and `log.txt`
+- ✅ Write a basic summary to the log at completion
+- ✅ Use the `log` crate with `env_logger` for dual output
 
-### Deliverables
-- All existing console output captured to file
-- Run-specific directories for organization
-- Basic summary statistics using existing data (visited_urls.len(), etc.)
+### Deliverables (ACHIEVED)
+- ✅ All existing console output captured to file with timestamps
+- ✅ Run-specific directories for organization
+- ✅ Basic summary statistics using existing data (visited_urls.len(), etc.)
 
-## Phase 2: Statistics Tracking
+### Current Limitations (Expected)
+- Total bytes shows 0 (not tracked yet)
+- Successful downloads shows 0 (only tracking HTML pages in visited_urls)
+- Total resources shows 0 (download_cache only populated for non-HTML resources)
+
+## Phase 2: Statistics Tracking (NEXT)
 **Goal**: Add proper counters for different resource types and operations.
 
 ### Implementation
@@ -25,12 +30,14 @@ This document outlines the phased approach to implementing comprehensive logging
   - Pages crawled, HTML/CSS/JS/Image downloads
   - Success/error counts per resource type
   - Queue size tracking
-- Write detailed `summary.json` at run completion
-- Track download duration and sizes
+  - **Total bytes downloaded (sum of all file sizes)**
+- Track each download's size when saving files
+- Properly track both HTML and non-HTML resources in statistics
 
 ### Deliverables
 - Accurate statistics per resource type
-- JSON summary with structured data
+- Proper success/failure counts
+- Total download size in bytes
 - Performance metrics (duration, throughput)
 
 ## Phase 3: Live Terminal Dashboard
@@ -142,14 +149,13 @@ This document outlines the phased approach to implementing comprehensive logging
 ```
 output_dir/
 ├── .mirror/
-│   ├── manifest.json          # Global manifest
+│   ├── manifest.json          # Global manifest (Phase 4)
+│   ├── url_map.db             # SQLite URL cache (Already implemented)
 │   └── runs/
 │       ├── 2024-01-20_10-30-00/
-│       │   ├── log.txt        # Full log output
-│       │   └── summary.json   # Run statistics
+│       │   └── log.txt        # Full log output (Phase 1 ✅)
 │       └── 2024-01-20_16-45-00/
-│           ├── log.txt
-│           └── summary.json
+│           └── log.txt
 └── [downloaded content]
 ```
 
