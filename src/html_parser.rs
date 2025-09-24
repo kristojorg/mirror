@@ -36,7 +36,12 @@ impl HtmlParser {
     }
 
     /// Extract all resources from HTML content
-    pub fn extract_resources(&self, html_content: &str) -> Result<Vec<ResourceLink>> {
+    /// If skip_url_resolution is true, relative paths are kept as-is (for saved HTML files)
+    pub fn extract_resources_with_mode(
+        &self,
+        html_content: &str,
+        skip_url_resolution: bool,
+    ) -> Result<Vec<ResourceLink>> {
         let document = Document::from(html_content);
         let mut resources = Vec::new();
 
@@ -45,7 +50,9 @@ impl HtmlParser {
             if let Some(href) = link.attr("href") {
                 if let Some(rel) = link.attr("rel") {
                     if rel.contains("stylesheet") {
-                        if let Ok(resource) = self.create_resource_link(href, ResourceType::CSS) {
+                        if let Ok(resource) =
+                            self.create_resource_link(href, ResourceType::CSS, skip_url_resolution)
+                        {
                             resources.push(resource);
                         }
                     }
@@ -56,7 +63,9 @@ impl HtmlParser {
         // Extract JavaScript files
         for script in document.find(Name("script")) {
             if let Some(src) = script.attr("src") {
-                if let Ok(resource) = self.create_resource_link(src, ResourceType::JavaScript) {
+                if let Ok(resource) =
+                    self.create_resource_link(src, ResourceType::JavaScript, skip_url_resolution)
+                {
                     resources.push(resource);
                 }
             }
@@ -65,7 +74,9 @@ impl HtmlParser {
         // Extract images
         for img in document.find(Name("img")) {
             if let Some(src) = img.attr("src") {
-                if let Ok(resource) = self.create_resource_link(src, ResourceType::Image) {
+                if let Ok(resource) =
+                    self.create_resource_link(src, ResourceType::Image, skip_url_resolution)
+                {
                     resources.push(resource);
                 }
             }
@@ -81,7 +92,9 @@ impl HtmlParser {
         // Extract links
         for link in document.find(Name("a")) {
             if let Some(href) = link.attr("href") {
-                if let Ok(resource) = self.create_resource_link(href, ResourceType::Link) {
+                if let Ok(resource) =
+                    self.create_resource_link(href, ResourceType::Link, skip_url_resolution)
+                {
                     resources.push(resource);
                 }
             }
@@ -90,8 +103,18 @@ impl HtmlParser {
         Ok(resources)
     }
 
-    /// Create a resource link with resolved absolute URL
-    fn create_resource_link(&self, url: &str, resource_type: ResourceType) -> Result<ResourceLink> {
+    /// Extract all resources from HTML content (convenience method)
+    pub fn extract_resources(&self, html_content: &str) -> Result<Vec<ResourceLink>> {
+        self.extract_resources_with_mode(html_content, false)
+    }
+
+    /// Create a resource link with resolved absolute URL (or keep relative if skip_resolution is true)
+    fn create_resource_link(
+        &self,
+        url: &str,
+        resource_type: ResourceType,
+        skip_url_resolution: bool,
+    ) -> Result<ResourceLink> {
         // Skip data URLs and other special schemes
         if url.starts_with("data:")
             || url.starts_with("javascript:")
@@ -102,11 +125,18 @@ impl HtmlParser {
             return Err(anyhow::anyhow!("Special URL scheme not supported"));
         }
 
-        let absolute_url = self.resolve_url(url)?;
+        let absolute_url = if skip_url_resolution {
+            // When processing saved HTML files, keep the relative paths as-is
+            // These will be looked up in mirror_state to find the original URLs
+            url.to_string()
+        } else {
+            // Normal mode: resolve to absolute URL
+            self.resolve_url(url)?.to_string()
+        };
 
         Ok(ResourceLink {
             original_url: url.to_string(),
-            absolute_url: absolute_url.to_string(),
+            absolute_url,
             resource_type,
         })
     }
@@ -143,7 +173,7 @@ impl HtmlParser {
                 for cap in regex.captures_iter(css_content) {
                     if let Some(url) = cap.get(1) {
                         if let Ok(resource) =
-                            self.create_resource_link(url.as_str(), ResourceType::Image)
+                            self.create_resource_link(url.as_str(), ResourceType::Image, false)
                         {
                             resources.push(resource);
                         }
@@ -402,28 +432,28 @@ mod tests {
         let parser = HtmlParser::new("https://example.com").unwrap();
 
         let resource = parser
-            .create_resource_link("/style.css", ResourceType::CSS)
+            .create_resource_link("/style.css", ResourceType::CSS, false)
             .unwrap();
         assert_eq!(resource.original_url, "/style.css");
         assert_eq!(resource.absolute_url, "https://example.com/style.css");
         assert_eq!(resource.resource_type, ResourceType::CSS);
 
         let resource = parser
-            .create_resource_link("/script.js", ResourceType::JavaScript)
+            .create_resource_link("/script.js", ResourceType::JavaScript, false)
             .unwrap();
         assert_eq!(resource.original_url, "/script.js");
         assert_eq!(resource.absolute_url, "https://example.com/script.js");
         assert_eq!(resource.resource_type, ResourceType::JavaScript);
 
         let resource = parser
-            .create_resource_link("/image.jpg", ResourceType::Image)
+            .create_resource_link("/image.jpg", ResourceType::Image, false)
             .unwrap();
         assert_eq!(resource.original_url, "/image.jpg");
         assert_eq!(resource.absolute_url, "https://example.com/image.jpg");
         assert_eq!(resource.resource_type, ResourceType::Image);
 
         let resource = parser
-            .create_resource_link("/page", ResourceType::Link)
+            .create_resource_link("/page", ResourceType::Link, false)
             .unwrap();
         assert_eq!(resource.original_url, "/page");
         assert_eq!(resource.absolute_url, "https://example.com/page");
@@ -433,35 +463,38 @@ mod tests {
     #[test]
     fn test_create_resource_link_with_data_url() {
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser.create_resource_link("data:image/png;base64,data", ResourceType::Image);
+        let result =
+            parser.create_resource_link("data:image/png;base64,data", ResourceType::Image, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_create_resource_link_with_fragment() {
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser.create_resource_link("#fragment", ResourceType::Link);
+        let result = parser.create_resource_link("#fragment", ResourceType::Link, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_create_resource_link_with_mailto() {
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser.create_resource_link("mailto:test@example.com", ResourceType::Link);
+        let result =
+            parser.create_resource_link("mailto:test@example.com", ResourceType::Link, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_create_resource_link_with_tel() {
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser.create_resource_link("tel:+1234567890", ResourceType::Link);
+        let result = parser.create_resource_link("tel:+1234567890", ResourceType::Link, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_create_resource_link_with_javascript() {
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let result = parser.create_resource_link("javascript:alert('test')", ResourceType::Link);
+        let result =
+            parser.create_resource_link("javascript:alert('test')", ResourceType::Link, false);
         assert!(result.is_err());
     }
 

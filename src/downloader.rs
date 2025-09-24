@@ -16,6 +16,16 @@ use crate::run_logger::RunLogger;
 use crate::url_mapper::UrlMapper;
 use webp::Encoder;
 
+/// Result of processing a URL
+#[derive(Debug, Clone)]
+pub enum ProcessResult {
+    Downloaded,
+    SkippedAlreadyExists, // File already exists on disk (resumption)
+    SkippedFiltered,      // Skipped due to resource type filter
+    AlreadyVisited,       // Already processed in this session
+    Error(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadPriority {
     Critical = 0, // CSS and JavaScript files
@@ -71,7 +81,6 @@ impl PartialOrd for DownloadTask {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct WebsiteMirror {
     pub base_url: String,
@@ -87,7 +96,7 @@ pub struct WebsiteMirror {
     html_parser: HtmlParser,
     visited_urls: Arc<Mutex<HashSet<String>>>,
     download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>,
-    mirror_state: MirrorState, // Persistent state and statistics tracking
+    mirror_state: MirrorState,  // Persistent state and statistics tracking
     run_logger: Arc<RunLogger>, // Runtime logger for tracking this run
 }
 
@@ -140,7 +149,7 @@ impl WebsiteMirror {
                     "🔍 Simple WebP replacement: {} -> {} ({} replacements)",
                     old_ext,
                     new_ext,
-                    after_count
+                    after_count,
                 );
             }
         }
@@ -365,8 +374,7 @@ impl WebsiteMirror {
                 let run_logger = Some(self.run_logger.clone());
 
                 // Process the download directly instead of spawning a task
-                log::info!("🚀 Processing download for: {}", url);
-                if let Err(e) = Self::download_and_process_url(
+                match Self::download_and_process_url(
                     &client,
                     &file_manager,
                     &url,
@@ -383,9 +391,25 @@ impl WebsiteMirror {
                 )
                 .await
                 {
-                    log::error!("❌ Error downloading {}: {}", url, e);
+                    Ok(ProcessResult::Downloaded) => {
+                        log::info!("✅ Downloaded: {}", url);
+                    }
+                    Ok(ProcessResult::SkippedAlreadyExists) => {
+                        log::debug!("⏭️  Already exists: {}", url);
+                    }
+                    Ok(ProcessResult::SkippedFiltered) => {
+                        log::debug!("🔍 Filtered out: {}", url);
+                    }
+                    Ok(ProcessResult::AlreadyVisited) => {
+                        // This is normal, no log needed
+                    }
+                    Ok(ProcessResult::Error(msg)) => {
+                        log::error!("❌ Error: {} - {}", url, msg);
+                    }
+                    Err(e) => {
+                        log::error!("❌ Unexpected error downloading {}: {}", url, e);
+                    }
                 }
-                log::info!("🏁 Download completed for: {}", url);
             } else {
                 // Check if all downloads are complete
                 let queue_size = self.download_queue.lock().unwrap().len();
@@ -411,6 +435,9 @@ impl WebsiteMirror {
 
     /// Extract and queue HTML links from content for crawling
     /// This is used both for fresh downloads and when re-processing existing HTML
+    /// When resuming, existing_file_mode should be true and mirror_state should be provided
+    /// to convert local paths back to URLs
+    /// current_page_url is the URL of the page we're extracting links from
     async fn extract_and_queue_html_links(
         page_html_parser: &HtmlParser,
         html_content: &str,
@@ -418,7 +445,10 @@ impl WebsiteMirror {
         visited_urls: &Arc<Mutex<HashSet<String>>>,
         download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
         base_url: &str,
+        current_page_url: &str,
         only_resources: &Option<Vec<String>>,
+        existing_file_mode: bool,
+        mirror_state: Option<&MirrorState>,
     ) -> Result<()> {
         // Check if we should process HTML links based on resource filter
         let should_process_links = if let Some(ref only_resources) = only_resources {
@@ -431,25 +461,135 @@ impl WebsiteMirror {
             return Ok(());
         }
 
-        let resources = page_html_parser.extract_resources(html_content)?;
+        let resources = if existing_file_mode {
+            // For existing files with rewritten paths, don't resolve URLs
+            page_html_parser.extract_resources_with_mode(html_content, true)?
+        } else {
+            // For fresh downloads, resolve URLs normally
+            page_html_parser.extract_resources(html_content)?
+        };
+
+        log::debug!("🔍 Extracted {} resources from HTML", resources.len());
+        for r in &resources {
+            log::debug!(
+                "  - {} ({}): {} -> {}",
+                match r.resource_type {
+                    ResourceType::Link => "Link",
+                    ResourceType::CSS => "CSS",
+                    ResourceType::JavaScript => "JS",
+                    ResourceType::Image => "Image",
+                    ResourceType::Other => "Other",
+                },
+                r.original_url,
+                r.absolute_url,
+                if existing_file_mode {
+                    "will lookup in mirror_state"
+                } else {
+                    "will queue"
+                }
+            );
+        }
 
         // Only process HTML links for crawling
         for resource in resources {
             if matches!(resource.resource_type, ResourceType::Link) {
-                if resource.absolute_url.starts_with(base_url) {
-                    let normalized_url = UrlMapper::normalize_root_url(&resource.absolute_url);
+                // When processing existing files, the URLs have been rewritten to local paths
+                // We need to convert them back to absolute URLs using the mirror state
+                let url_to_queue = if existing_file_mode {
+                    if let Some(state) = mirror_state {
+                        // The resource.absolute_url contains a relative path from the HTML
+                        // We need to resolve it relative to the current HTML file's directory
+                        // to get the full local path, then look that up in mirror_state
+
+                        // The paths in mirror_state look like "www.scrapethissite.com/pages/index.html"
+                        // The paths in saved HTML look like "pages/index.html" (relative to current file)
+                        // We need to resolve these relative to the current HTML's location
+
+                        // Get the current page's local path - we MUST have this since we're reading an existing file
+                        let url_mapper = match UrlMapper::new(false) {
+                            Ok(mapper) => mapper,
+                            Err(e) => {
+                                log::error!("Failed to create UrlMapper: {}", e);
+                                continue;
+                            }
+                        };
+                        let current_local_path = match url_mapper
+                            .url_to_local_path(current_page_url, &ResourceType::Link)
+                        {
+                            Ok(path) => path,
+                            Err(e) => {
+                                log::error!(
+                                    "Failed to get local path for {}: {}",
+                                    current_page_url,
+                                    e
+                                );
+                                continue;
+                            }
+                        };
+
+                        // Get the directory of the current page
+                        let current_dir = current_local_path
+                            .parent()
+                            .expect("Current page path must have a parent directory")
+                            .to_string_lossy();
+
+                        // Resolve the relative path from the HTML
+                        let local_path = if resource.absolute_url.starts_with("http") {
+                            // Shouldn't happen in existing_file_mode
+                            log::error!(
+                                "Unexpected http URL in existing file: {}",
+                                resource.absolute_url
+                            );
+                            continue; // Skip this one
+                        } else {
+                            // Use path joining to resolve relative paths properly
+                            let path = std::path::Path::new(current_dir.as_ref())
+                                .join(&resource.absolute_url);
+                            // Convert to string and normalize
+                            path.to_string_lossy().to_string()
+                        };
+
+                        log::debug!(
+                            "📂 Looking up local path in mirror_state: {} (from relative: {})",
+                            local_path,
+                            resource.absolute_url
+                        );
+
+                        if let Some(original_url) = state.get_url(&local_path) {
+                            log::debug!(
+                                "📂 Converted local path {} back to URL: {}",
+                                resource.absolute_url,
+                                original_url
+                            );
+                            original_url
+                        } else {
+                            // If we can't find it in the state, skip this link
+                            log::debug!(
+                                "⚠️  Could not find URL for local path: {}",
+                                resource.absolute_url
+                            );
+                            continue;
+                        }
+                    } else {
+                        log::warn!("⚠️  Mirror state not provided for existing file mode");
+                        continue;
+                    }
+                } else {
+                    // Fresh download - use the absolute URL directly
+                    resource.absolute_url.clone()
+                };
+
+                if url_to_queue.starts_with(base_url) {
+                    let normalized_url = UrlMapper::normalize_root_url(&url_to_queue);
                     if !visited_urls.lock().unwrap().contains(&normalized_url) {
                         let mut queue = download_queue.lock().unwrap();
                         queue.push(DownloadTask {
-                            url: resource.absolute_url.clone(),
+                            url: url_to_queue.clone(),
                             depth: depth + 1,
                             priority: DownloadPriority::High,
                             resource_type: Some(ResourceType::Link),
                         });
-                        log::info!(
-                            "⚡ Queued HTML page for crawling: {}",
-                            resource.absolute_url
-                        );
+                        log::info!("⚡ Queued HTML page for crawling: {}", url_to_queue);
                     }
                 }
             }
@@ -706,8 +846,8 @@ impl WebsiteMirror {
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
-    ) -> Result<()> {
-        log::info!("📄 Processing HTML page: {}", url);
+    ) -> Result<ProcessResult> {
+        log::debug!("📄 Processing HTML page: {}", url);
 
         // Check if file exists on disk
         let url_mapper = UrlMapper::new(convert_to_webp)?;
@@ -715,7 +855,7 @@ impl WebsiteMirror {
 
         // If HTML already exists on disk, just extract links for crawling
         if file_manager.file_exists(&local_html_path) {
-            log::info!(
+            log::debug!(
                 "📂 HTML already exists on disk: {}",
                 local_html_path.display()
             );
@@ -736,6 +876,7 @@ impl WebsiteMirror {
                     let page_html_parser = HtmlParser::new(url)?;
 
                     // Extract and queue links for crawling - not resources since they're already downloaded
+                    // Pass true for existing_file_mode since we're processing a saved file with rewritten URLs
                     Self::extract_and_queue_html_links(
                         &page_html_parser,
                         &html_content,
@@ -743,15 +884,18 @@ impl WebsiteMirror {
                         visited_urls,
                         download_queue,
                         base_url,
+                        url, // current_page_url
                         only_resources,
+                        true,               // existing_file_mode
+                        Some(mirror_state), // provide mirror_state to convert paths back to URLs
                     )
                     .await?;
 
-                    log::info!(
+                    log::debug!(
                         "✅ Extracted links from existing HTML: {}",
                         local_html_path.display()
                     );
-                    return Ok(());
+                    return Ok(ProcessResult::SkippedAlreadyExists);
                 }
                 Err(e) => {
                     log::error!("⚠️  Failed to read existing HTML, re-downloading: {}", e);
@@ -761,7 +905,7 @@ impl WebsiteMirror {
         }
 
         // Download the HTML page since it doesn't exist locally (or couldn't be read)
-        log::info!("📥 Downloading HTML page: {}", url);
+        log::debug!("📥 Downloading HTML page: {}", url);
         let client_for_download = client.clone();
         let response = match client_for_download.get(url).send().await {
             Ok(resp) => resp,
@@ -776,20 +920,27 @@ impl WebsiteMirror {
                 if let Some(ref logger) = run_logger {
                     logger.track_error();
                 }
-                return Ok(());
+                return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
             }
         };
 
         if response.status() != StatusCode::OK {
             log::warn!("⚠️  HTTP {} for {}", response.status(), url);
-            return Ok(());
+            return Ok(ProcessResult::Error(format!(
+                "HTTP {} for {}",
+                response.status(),
+                url
+            )));
         }
 
         let content = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
                 log::error!("❌ Failed to read response body: {}", e);
-                return Ok(());
+                return Ok(ProcessResult::Error(format!(
+                    "Failed to read response body: {}",
+                    e
+                )));
             }
         };
 
@@ -830,10 +981,10 @@ impl WebsiteMirror {
 
         // Save the updated HTML with local paths for resources
         let local_html_path = url_mapper.url_to_local_path(url, &ResourceType::Link)?;
-        log::info!("💾 Saving HTML to: {}", local_html_path.display());
+        log::debug!("💾 Saving HTML to: {}", local_html_path.display());
         let saved_path =
             file_manager.save_file(&local_html_path, html_content_updated.as_bytes())?;
-        log::info!("✅ Saved HTML to: {}", saved_path.display());
+        log::debug!("✅ Saved HTML to: {}", saved_path.display());
 
         // Track successful HTML download
         let size_bytes = html_content_updated.len() as u64;
@@ -849,7 +1000,7 @@ impl WebsiteMirror {
             logger.track_downloaded(size_bytes);
         }
 
-        Ok(())
+        Ok(ProcessResult::Downloaded)
     }
 
     async fn download_and_process_css(
@@ -859,8 +1010,8 @@ impl WebsiteMirror {
         mirror_state: &MirrorState,
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
-    ) -> Result<()> {
-        log::info!("🎨 Processing CSS file: {}", url);
+    ) -> Result<ProcessResult> {
+        log::debug!("🎨 Processing CSS file: {}", url);
 
         // Check if CSS already exists on disk
         let url_mapper = UrlMapper::new(convert_to_webp)?;
@@ -868,7 +1019,7 @@ impl WebsiteMirror {
 
         if file_manager.file_exists(&local_path) {
             // File already exists, should already be in the manifest from previous run
-            log::info!(
+            log::debug!(
                 "⏭️  Skipping CSS (already exists on disk at {})",
                 local_path.display()
             );
@@ -876,7 +1027,7 @@ impl WebsiteMirror {
             if let Some(ref logger) = run_logger {
                 logger.track_skipped();
             }
-            return Ok(());
+            return Ok(ProcessResult::SkippedAlreadyExists);
         }
 
         // Download the URL
@@ -893,20 +1044,27 @@ impl WebsiteMirror {
                 if let Some(ref logger) = run_logger {
                     logger.track_error();
                 }
-                return Ok(());
+                return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
             }
         };
 
         if response.status() != StatusCode::OK {
             log::warn!("⚠️  HTTP {} for {}", response.status(), url);
-            return Ok(());
+            return Ok(ProcessResult::Error(format!(
+                "HTTP {} for {}",
+                response.status(),
+                url
+            )));
         }
 
         let content = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
                 log::error!("❌ Failed to read response body: {}", e);
-                return Ok(());
+                return Ok(ProcessResult::Error(format!(
+                    "Failed to read response body: {}",
+                    e
+                )));
             }
         };
 
@@ -946,9 +1104,9 @@ impl WebsiteMirror {
         // Save the CSS file
         let url_mapper = UrlMapper::new(convert_to_webp)?;
         let local_path = url_mapper.url_to_local_path(url, &ResourceType::CSS)?;
-        log::info!("💾 Saving CSS to: {}", local_path.display());
+        log::debug!("💾 Saving CSS to: {}", local_path.display());
         let saved_path = file_manager.save_file(&local_path, &content)?;
-        log::info!("✅ Saved CSS to: {:?}", saved_path);
+        log::debug!("✅ Saved CSS to: {:?}", saved_path);
 
         // Track successful CSS download
         let size_bytes = content.len() as u64;
@@ -964,7 +1122,7 @@ impl WebsiteMirror {
             logger.track_downloaded(size_bytes);
         }
 
-        Ok(())
+        Ok(ProcessResult::Downloaded)
     }
 
     async fn download_and_process_url(
@@ -981,13 +1139,13 @@ impl WebsiteMirror {
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
-    ) -> Result<()> {
+    ) -> Result<ProcessResult> {
         // Check if already visited (normalize root URLs to avoid duplicates)
         {
             let normalized_url = UrlMapper::normalize_root_url(url);
             let mut visited = visited_urls.lock().unwrap();
             if visited.contains(&normalized_url) {
-                return Ok(());
+                return Ok(ProcessResult::AlreadyVisited);
             }
             visited.insert(normalized_url);
         }
@@ -997,10 +1155,10 @@ impl WebsiteMirror {
             DownloadPriority::High => "⚡ HIGH",
             DownloadPriority::Normal => "📥 NORMAL",
         };
-        log::info!("{} Downloading: {} (depth: {})", priority_str, url, depth);
+        log::debug!("{} Processing: {} (depth: {})", priority_str, url, depth);
 
         // Route to appropriate handler based on resource type
-        match resource_type {
+        let result = match resource_type {
             Some(ResourceType::Link) | None => {
                 // HTML page
                 Self::download_and_process_html(
@@ -1016,7 +1174,7 @@ impl WebsiteMirror {
                     convert_to_webp,
                     run_logger,
                 )
-                .await?;
+                .await
             }
             Some(ResourceType::CSS) => {
                 // CSS file
@@ -1028,11 +1186,11 @@ impl WebsiteMirror {
                     convert_to_webp,
                     run_logger,
                 )
-                .await?;
+                .await
             }
             Some(resource_type) => {
                 // Other resources (JS, images, etc.) - just download without processing
-                log::info!("📦 Processing resource: {}", url);
+                log::debug!("📦 Processing resource: {}", url);
                 let url_mapper = UrlMapper::new(convert_to_webp)?;
                 Self::download_resource(
                     client,
@@ -1044,12 +1202,11 @@ impl WebsiteMirror {
                     convert_to_webp,
                     run_logger,
                 )
-                .await?;
+                .await
             }
-        }
+        };
 
-        log::info!("✅ Downloaded: {}", url);
-        Ok(())
+        result
     }
 
     async fn download_resource(
@@ -1061,10 +1218,10 @@ impl WebsiteMirror {
         mirror_state: &MirrorState,
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
-    ) -> Result<()> {
+    ) -> Result<ProcessResult> {
         // Check if already downloaded using cache
         if let Some(cached_path) = mirror_state.get_path(url) {
-            log::info!(
+            log::debug!(
                 "⏭️  Skipping {} (already downloaded to {})",
                 url,
                 cached_path
@@ -1073,7 +1230,7 @@ impl WebsiteMirror {
             if let Some(ref logger) = run_logger {
                 logger.track_skipped();
             }
-            return Ok(());
+            return Ok(ProcessResult::SkippedAlreadyExists);
         }
 
         // Check if file exists on disk
@@ -1081,7 +1238,7 @@ impl WebsiteMirror {
         let local_path = url_mapper.url_to_local_path(url, resource_type)?;
         if file_manager.file_exists(&local_path) {
             // File already exists, should already be in the manifest from previous run
-            log::info!(
+            log::debug!(
                 "⏭️  Skipping {} (already exists on disk at {})",
                 url,
                 local_path.display()
@@ -1090,7 +1247,7 @@ impl WebsiteMirror {
             if let Some(ref logger) = run_logger {
                 logger.track_skipped();
             }
-            return Ok(());
+            return Ok(ProcessResult::SkippedAlreadyExists);
         }
 
         // Determine resource type string for better logging
@@ -1112,7 +1269,7 @@ impl WebsiteMirror {
             }
         };
 
-        log::info!("📥 Downloading {}: {}", resource_type_str, url);
+        log::debug!("📥 Downloading {}: {}", resource_type_str, url);
 
         let response = match client.get(url).send().await {
             Ok(resp) => resp,
@@ -1132,7 +1289,7 @@ impl WebsiteMirror {
                 if let Some(ref logger) = run_logger {
                     logger.track_error();
                 }
-                return Ok(());
+                return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
             }
         };
 
@@ -1143,7 +1300,11 @@ impl WebsiteMirror {
                 resource_type_str,
                 url
             );
-            return Ok(());
+            return Ok(ProcessResult::Error(format!(
+                "HTTP {} for {}",
+                response.status(),
+                url
+            )));
         }
 
         let _content_type = response
@@ -1162,7 +1323,10 @@ impl WebsiteMirror {
                     url,
                     e
                 );
-                return Ok(());
+                return Ok(ProcessResult::Error(format!(
+                    "Failed to read response body: {}",
+                    e
+                )));
             }
         };
 
@@ -1189,7 +1353,7 @@ impl WebsiteMirror {
             Ok(path) => path,
             Err(e) => {
                 log::error!("❌ Failed to save {} {}: {}", resource_type_str, url, e);
-                return Ok(());
+                return Ok(ProcessResult::Error(format!("Failed to save file: {}", e)));
             }
         };
 
@@ -1213,7 +1377,7 @@ impl WebsiteMirror {
             saved_path.display()
         );
 
-        Ok(())
+        Ok(ProcessResult::Downloaded)
     }
 }
 
