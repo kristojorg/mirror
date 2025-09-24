@@ -380,6 +380,55 @@ impl WebsiteMirror {
         Ok(())
     }
 
+    /// Extract and queue HTML links from content for crawling
+    /// This is used both for fresh downloads and when re-processing existing HTML
+    async fn extract_and_queue_html_links(
+        page_html_parser: &HtmlParser,
+        html_content: &str,
+        depth: usize,
+        visited_urls: &Arc<Mutex<HashSet<String>>>,
+        download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
+        base_url: &str,
+        only_resources: &Option<Vec<String>>,
+    ) -> Result<()> {
+        // Check if we should process HTML links based on resource filter
+        let should_process_links = if let Some(ref only_resources) = only_resources {
+            only_resources.iter().any(|r| r.to_lowercase() == "html")
+        } else {
+            true
+        };
+
+        if !should_process_links {
+            return Ok(());
+        }
+
+        let resources = page_html_parser.extract_resources(html_content)?;
+
+        // Only process HTML links for crawling
+        for resource in resources {
+            if matches!(resource.resource_type, ResourceType::Link) {
+                if resource.absolute_url.starts_with(base_url) {
+                    let normalized_url = UrlMapper::normalize_root_url(&resource.absolute_url);
+                    if !visited_urls.lock().unwrap().contains(&normalized_url) {
+                        let mut queue = download_queue.lock().unwrap();
+                        queue.push(DownloadTask {
+                            url: resource.absolute_url.clone(),
+                            depth: depth + 1,
+                            priority: DownloadPriority::High,
+                            resource_type: Some(ResourceType::Link),
+                        });
+                        println!(
+                            "⚡ Queued HTML page for crawling: {}",
+                            resource.absolute_url
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Process resources from HTML content - extract, categorize, download, and queue
     /// Returns a mapping of original URLs to local paths for HTML rewriting
     async fn process_html_resources(
@@ -598,7 +647,52 @@ impl WebsiteMirror {
     ) -> Result<()> {
         println!("📄 Processing HTML page: {}", url);
 
-        // Download the URL
+        // Check if file exists on disk
+        let url_mapper = UrlMapper::new(convert_to_webp)?;
+        let local_html_path = url_mapper.url_to_local_path(url, &ResourceType::Link)?;
+
+        // If HTML already exists on disk, just extract links for crawling
+        if file_manager.file_exists(&local_html_path) {
+            println!(
+                "📂 HTML already exists on disk: {}",
+                local_html_path.display()
+            );
+
+            // Read the existing HTML to extract links
+            match file_manager.read_file(&local_html_path) {
+                Ok(content) => {
+                    let html_content = String::from_utf8_lossy(&content);
+
+                    // Create a parser to extract links (links are still absolute URLs in the saved HTML)
+                    let page_html_parser = HtmlParser::new(url)?;
+
+                    // Extract and queue links for crawling - not resources since they're already downloaded
+                    Self::extract_and_queue_html_links(
+                        &page_html_parser,
+                        &html_content,
+                        depth,
+                        visited_urls,
+                        download_queue,
+                        base_url,
+                        only_resources,
+                    )
+                    .await?;
+
+                    println!(
+                        "✅ Extracted links from existing HTML: {}",
+                        local_html_path.display()
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Failed to read existing HTML, re-downloading: {}", e);
+                    // Fall through to download the file again
+                }
+            }
+        }
+
+        // Download the HTML page since it doesn't exist locally (or couldn't be read)
+        println!("📥 Downloading HTML page: {}", url);
         let client_for_download = client.clone();
         let response = match client_for_download.get(url).send().await {
             Ok(resp) => resp,
@@ -625,7 +719,6 @@ impl WebsiteMirror {
 
         // Create a new HTML parser with the current page's base URL
         let page_html_parser = HtmlParser::new(url)?;
-        let url_mapper = UrlMapper::new(convert_to_webp)?;
         let html_rewriter = HtmlRewriter::new();
 
         // Process resources and get URL mappings

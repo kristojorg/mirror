@@ -70,10 +70,19 @@ impl UrlMapper {
     fn html_url_to_path(&self, url: &Url) -> Result<PathBuf> {
         let mut path = self.build_base_path(url)?;
         let url_path = url.path();
+        let has_query = url.query().is_some();
 
-        // If ends with /, add index.html
+        // Special handling for URLs ending with /
         if url_path.ends_with('/') {
-            path = path.join("index.html");
+            if has_query {
+                // Query parameters were already handled in build_base_path
+                // The path now ends with something like "index--page_num_1"
+                // Just add the .html extension
+                path.set_extension("html");
+            } else {
+                // No query params, add index.html as usual
+                path = path.join("index.html");
+            }
         }
         // If path doesn't have an extension, add .html
         else if path.extension().is_none() {
@@ -172,10 +181,24 @@ impl UrlMapper {
         // Use -- as separator and replace special chars with _
         if let Some(query) = url.query() {
             if !query.is_empty() {
-                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("index");
+                // Check if the URL path ends with a trailing slash
+                // In that case, we want to use "index" as the filename base
+                let filename = if url.path().ends_with('/') {
+                    "index"
+                } else {
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("index")
+                };
+
                 let sanitized_query = self.sanitize_path_segment(query);
                 let new_name = format!("{}--{}", filename, sanitized_query);
-                path.set_file_name(new_name);
+
+                // If URL ends with /, we need to append the new filename
+                // Otherwise, replace the existing filename
+                if url.path().ends_with('/') {
+                    path.push(new_name);
+                } else {
+                    path.set_file_name(new_name);
+                }
             }
         }
 
@@ -283,6 +306,24 @@ mod tests {
             .url_to_local_path("https://example.com/style.css?v=1.2.3", &ResourceType::CSS)
             .unwrap();
         assert!(path.to_string_lossy().contains("style.css--v_1.2.3"));
+
+        // Test URL with trailing slash and query params
+        let path = mapper
+            .url_to_local_path(
+                "https://www.scrapethissite.com/pages/forms/?page_num=2",
+                &ResourceType::Link,
+            )
+            .unwrap();
+        assert_eq!(
+            path.to_string_lossy(),
+            "www.scrapethissite.com/pages/forms/index--page_num_2.html"
+        );
+
+        // Test URL without trailing slash and query params
+        let path = mapper
+            .url_to_local_path("https://example.com/page?id=123", &ResourceType::Link)
+            .unwrap();
+        assert_eq!(path.to_string_lossy(), "example.com/page--id_123.html");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 1. Add --continue command
-  - Make it work for webp
-  - Make it check html files
-  - Make it check js files also
+  - Make it work for webp (MAYBE RIP OUT WEBP)
+  - Make it check html files DONE
+  - Make it check js files also DONE
 2. Generate manifest so we can see statistics, errors, and all files downloaded.
 3. Generate a log for each run that details what happened in that run, while the manifest details the current state.
 4. Download files from external sources into separate folders by domain name, similar to how httrack works.
@@ -10,6 +10,7 @@
 7. Make the manifest hold information about when the file was last downloaded.
 8. Figure out how to handle query parameters. on pcs they are: scraped/procyclingstats.com/www.procyclingstats.com/index.html?popular=pro_me&s=upcoming-races&category=1.html and scraped/procyclingstats.com/www.procyclingstats.com/badge.php?id=17.html
 9. Allow using random user agent from a file/list
+10. Make sure filters work.
 
 
 ## Notes
