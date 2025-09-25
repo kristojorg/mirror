@@ -102,54 +102,119 @@ state.get_statistics() -> Statistics;     // Computed on-the-fly
 - Remove any code paths that handle existing files differently
 - Keep only the fresh download path (parsing from live HTML content)
 
-## Phase 3: Replace In-Memory Structures with PersistentState
+## ✅ Phase 3: COMPLETED - Replace In-Memory Structures with PersistentState
 
 **Goal**: Replace HashSet/BinaryHeap with PersistentState throughout WebsiteMirror.
 
-### 3.1 Update WebsiteMirror struct
-```rust
-// Remove:
-visited_urls: Arc<Mutex<HashSet<String>>>
-download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>
-mirror_state: MirrorState
+### 3.1 ✅ Update WebsiteMirror struct
+- Removed `visited_urls: Arc<Mutex<HashSet<String>>>`
+- Removed `download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>`
+- Added `state: Arc<PersistentState>`
 
-// Add:
-state: Arc<PersistentState>
-```
+### 3.2 ✅ Update WebsiteMirror::new
+- Created `PersistentState::new(output_dir)` instead of in-memory structures
+- Removed initialization of visited_urls, download_queue
+- Kept temporary MirrorState for RunLogger compatibility (will be removed in Phase 5)
 
-### 3.2 Update WebsiteMirror::new
-- Create `PersistentState::new(output_dir)` instead of in-memory structures
-- Remove all initialization of visited_urls, download_queue, mirror_state
+### 3.3 ✅ Update main crawl loop in `mirror_website`
+- Replaced `self.download_queue.lock().unwrap().push()` → `self.state.enqueue()`
+- Replaced `self.download_queue.lock().unwrap().pop()` → `self.state.dequeue()`
+- Removed visited_urls checks (PersistentState handles this internally)
 
-### 3.3 Update main crawl loop in `mirror_website`
-- Replace `self.download_queue.lock().unwrap().push()` → `self.state.enqueue()`
-- Replace `self.download_queue.lock().unwrap().pop()` → `self.state.dequeue()`
-- Remove any visited_urls checks (PersistentState handles this internally)
+### 3.4 ✅ Additional Improvements Made
+- Added URL normalization to PersistentState to prevent duplicates (e.g., example.com vs example.com/)
+- Removed duplicate DownloadTask struct from downloader.rs (now uses persistent_state::DownloadTask)
+- Updated method signatures to use `state: Arc<PersistentState>` instead of visited_urls/download_queue
 
 ## Phase 4: Update All Download Methods
 
-**Goal**: Thread PersistentState through all download/processing methods.
+**Goal**: Add proper state transitions (mark_completed/mark_errored) to track downloads in PersistentState.
 
-### Key Changes Needed
-- Remove `visited_urls`, `download_queue`, `mirror_state` parameters from all methods
-- Add `state: Arc<PersistentState>` parameter instead
-- Replace all state operations with PersistentState API calls
+### ⚠️ CRITICAL ISSUE IDENTIFIED:
+Downloads are being processed but **NOT being tracked in PersistentState**. URLs are moved from queue → processing but never moved to downloaded/errored.
 
-### Methods to Update
-1. `download_and_process_url` - Remove visited check (dequeue already ensures uniqueness)
-2. `download_resource` - Use `state.is_visited()` instead of file checks
-3. `process_html_resources` - Use `state.enqueue()` for adding to queue
-4. `download_and_process_html` - Use `state.mark_completed()` on success
-5. `extract_and_queue_html_links` - Use `state.enqueue()` with built-in dedup
+### Required State Transitions:
+Currently methods return `ProcessResult::Downloaded` but don't call `state.mark_completed()`. Need to add:
 
-## Phase 5: Clean Up Old Code
+1. **`download_and_process_html`** (line 745) - Add `state.mark_completed()` before returning
+2. **`download_and_process_css`** (line 867) - Add `state.mark_completed()` before returning
+3. **`download_resource`** (line 1111) - Add `state.mark_completed()` before returning
+
+### Error Handling:
+Also need to add `state.mark_errored()` calls when downloads fail with errors.
+
+### File Existence Checks:
+Replace filesystem-based "already exists" checks with `state.is_visited()` - this is the core benefit of PersistentState.
+
+## Phase 5: Update RunLogger to use PersistentState
+
+**Goal**: Replace MirrorState dependencies with PersistentState in RunLogger.
+
+### Current Temporary Compatibility Code:
+**These are stopgap measures from Phase 3 that need to be removed:**
+
+1. **Line 246-249** - `WebsiteMirror::new()` creates temporary MirrorState for RunLogger
+2. **Line 284-309** - `get_mirror_state_statistics()` converts PersistentState → MirrorState format
+3. **Line 314-316** - `get_mirror_state()` creates new MirrorState instances
+4. **Line 370-371** - `mirror_website()` creates temporary MirrorState per download
+5. **Line 293** - Missing bytes tracking per resource type in PersistentState
+
+### RunLogger Integration:
+- `src/run_logger.rs` expects MirrorState format for statistics display
+- Need to update RunLogger to work directly with PersistentState statistics
+- Or create a simple adapter that doesn't require MirrorState instantiation
+
+### Statistics Format Differences:
+```rust
+// PersistentState format
+struct Statistics {
+    urls_discovered: usize,
+    downloads: HashMap<String, usize>,  // resource_type -> count
+    total_bytes: u64,
+}
+
+// MirrorState format (more complex)
+struct Statistics {
+    downloads: DownloadStats {  // nested structure
+        html: ResourceStats { success, error, bytes },
+        css: ResourceStats { success, error, bytes },
+        // ...
+    }
+    // ...
+}
+```
+
+## Phase 6: Clean Up Old Code
 
 **Goal**: Remove all obsolete state management code.
 
-### 5.1 Delete `src/mirror_state.rs` entirely
-### 5.2 Remove module export from `lib.rs`
-### 5.3 Update or remove `RunLogger` if it depends on MirrorState
-### 5.4 Search for any remaining references to old state management
+### 6.1 Delete `src/mirror_state.rs` entirely
+### 6.2 Remove module export from `lib.rs` (line 17: `pub use mirror_state::MirrorState;`)
+### 6.3 Remove MirrorState imports from `src/downloader.rs`
+### 6.4 Remove all compatibility methods:
+   - `get_mirror_state_statistics()`
+   - `get_mirror_state()`
+### 6.5 ✅ RESOLVED - Removed duplicate DownloadTask struct from downloader.rs (Phase 3)
+
+## Current State After Phase 3
+
+### ✅ Working:
+- PersistentState API is fully implemented with URL normalization
+- Main crawl loop uses PersistentState queue operations
+- Downloads are dequeued properly and moved to processing
+- No more in-memory HashSet/BinaryHeap usage
+- Code compiles and runs
+
+### ❌ Not Working Yet:
+- **Downloads aren't tracked** - URLs stay in processing forever (Phase 4)
+- **No crash recovery** - Processing URLs don't get moved back to queue properly
+- **RunLogger still uses MirrorState** - Temporary compatibility layer (Phase 5)
+- **File exists checks** - Still using filesystem instead of state.is_visited()
+
+### Next Developer Notes:
+1. **Phase 4 is critical** - Without mark_completed()/mark_errored() calls, the persistent state doesn't work
+2. **Test resumption early** - Start a crawl, kill it, restart to verify recovery
+3. **The state.json file should show progress** - URLs moving between queue/processing/downloaded sections
 
 ## Testing Strategy
 

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::downloader::DownloadPriority;
 use crate::html_parser::ResourceType;
+use crate::url_mapper::UrlMapper;
 
 /// Statistics computed from the state data
 #[derive(Debug, Clone, Default)]
@@ -52,6 +53,7 @@ pub struct DownloadTask {
 }
 
 /// Main persistent state manager
+#[derive(Debug)]
 pub struct PersistentState {
     data: Arc<Mutex<StateData>>,
     cache_file: PathBuf,
@@ -127,8 +129,9 @@ impl PersistentState {
         // Pop from front (respecting priority order maintained by enqueue)
         let task = data.queue.pop_front()?;
 
-        // ATOMIC: Move from queue to processing
-        data.processing.insert(task.url.clone());
+        // ATOMIC: Move from queue to processing (normalize URL for consistency)
+        let normalized_url = UrlMapper::normalize_root_url(&task.url);
+        data.processing.insert(normalized_url);
 
         drop(data);  // Release lock before I/O
         self.save().ok();  // Best effort save
@@ -139,16 +142,19 @@ impl PersistentState {
     pub fn enqueue(&self, task: DownloadTask) {
         let mut data = self.data.lock().unwrap();
 
+        // Normalize URL to prevent duplicates (e.g., example.com vs example.com/)
+        let normalized_url = UrlMapper::normalize_root_url(&task.url);
+
         // Check if already visited (downloaded or errored) - no separate visited set!
-        if data.downloaded.contains_key(&task.url) || data.errored.contains_key(&task.url) {
+        if data.downloaded.contains_key(&normalized_url) || data.errored.contains_key(&normalized_url) {
             return;
         }
 
         // Also check if already in queue or processing
-        if data.processing.contains(&task.url) {
+        if data.processing.contains(&normalized_url) {
             return;
         }
-        if data.queue.iter().any(|t| t.url == task.url) {
+        if data.queue.iter().any(|t| UrlMapper::normalize_root_url(&t.url) == normalized_url) {
             return;
         }
 
@@ -180,10 +186,13 @@ impl PersistentState {
     ) {
         let mut data = self.data.lock().unwrap();
 
+        // Normalize URL for consistency
+        let normalized_url = UrlMapper::normalize_root_url(&url);
+
         // ATOMIC: Move from processing to downloaded
-        data.processing.remove(&url);
+        data.processing.remove(&normalized_url);
         data.downloaded.insert(
-            url,
+            normalized_url,
             ResourceInfo {
                 local_path,
                 resource_type: format!("{:?}", resource_type),
@@ -199,10 +208,13 @@ impl PersistentState {
     pub fn mark_errored(&self, url: String, error: String, resource_type: ResourceType) {
         let mut data = self.data.lock().unwrap();
 
+        // Normalize URL for consistency
+        let normalized_url = UrlMapper::normalize_root_url(&url);
+
         // ATOMIC: Move from processing to errored
-        data.processing.remove(&url);
+        data.processing.remove(&normalized_url);
         data.errored.insert(
-            url,
+            normalized_url,
             ErrorInfo {
                 error_message: error,
                 attempted_at: chrono::Local::now().to_rfc3339(),
@@ -216,8 +228,9 @@ impl PersistentState {
     /// Checks if a URL has been visited (downloaded or errored)
     pub fn is_visited(&self, url: &str) -> bool {
         let data = self.data.lock().unwrap();
+        let normalized_url = UrlMapper::normalize_root_url(url);
         // No separate visited set - just check downloaded + errored
-        data.downloaded.contains_key(url) || data.errored.contains_key(url)
+        data.downloaded.contains_key(&normalized_url) || data.errored.contains_key(&normalized_url)
     }
 
     /// Moves all processing URLs back to the queue (for crash recovery)
@@ -285,19 +298,22 @@ impl PersistentState {
     /// Checks if a URL is already in the queue
     pub fn is_queued(&self, url: &str) -> bool {
         let data = self.data.lock().unwrap();
-        data.queue.iter().any(|t| t.url == url)
+        let normalized_url = UrlMapper::normalize_root_url(url);
+        data.queue.iter().any(|t| UrlMapper::normalize_root_url(&t.url) == normalized_url)
     }
 
     /// Checks if a URL is currently being processed
     pub fn is_processing(&self, url: &str) -> bool {
         let data = self.data.lock().unwrap();
-        data.processing.contains(url)
+        let normalized_url = UrlMapper::normalize_root_url(url);
+        data.processing.contains(&normalized_url)
     }
 
     /// Gets the local path for a downloaded URL, if it exists
     pub fn get_local_path(&self, url: &str) -> Option<String> {
         let data = self.data.lock().unwrap();
-        data.downloaded.get(url).map(|info| info.local_path.clone())
+        let normalized_url = UrlMapper::normalize_root_url(url);
+        data.downloaded.get(&normalized_url).map(|info| info.local_path.clone())
     }
 
     /// Gets total count of URLs that have been seen/discovered

@@ -4,14 +4,15 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use reqwest::{Client, ClientBuilder, StatusCode};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
 use crate::html_rewriter::HtmlRewriter;
 use crate::mirror_state::MirrorState;
+use crate::persistent_state::{PersistentState, DownloadTask};
 use crate::run_logger::RunLogger;
 use crate::url_mapper::UrlMapper;
 use webp::Encoder;
@@ -54,32 +55,7 @@ impl Ord for DownloadPriority {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct DownloadTask {
-    pub url: String,
-    pub depth: usize,
-    pub priority: DownloadPriority,
-    pub resource_type: Option<ResourceType>,
-}
-
-impl Ord for DownloadTask {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // First compare by priority (lower number = higher priority)
-        let priority_cmp = self.priority.cmp(&other.priority);
-        if priority_cmp != Ordering::Equal {
-            return priority_cmp;
-        }
-
-        // If priorities are equal, lower depth = higher priority
-        other.depth.cmp(&self.depth)
-    }
-}
-
-impl PartialOrd for DownloadTask {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
+// DownloadTask is now imported from persistent_state module
 
 #[derive(Clone, Debug)]
 pub struct WebsiteMirror {
@@ -94,9 +70,7 @@ pub struct WebsiteMirror {
     client: Client,
     file_manager: FileManager,
     html_parser: HtmlParser,
-    visited_urls: Arc<Mutex<HashSet<String>>>,
-    download_queue: Arc<Mutex<BinaryHeap<DownloadTask>>>,
-    mirror_state: MirrorState,  // Persistent state and statistics tracking
+    state: Arc<PersistentState>,  // Unified persistent state management
     run_logger: Arc<RunLogger>, // Runtime logger for tracking this run
 }
 
@@ -261,14 +235,18 @@ impl WebsiteMirror {
         let client = Self::build_http_client()?;
         let file_manager = FileManager::new(output_dir)?;
         let html_parser = HtmlParser::new(base_url)?;
-        let mirror_state = MirrorState::new(output_dir)?;
+
+        // Create persistent state (automatically loads existing state or creates new)
+        let state = Arc::new(PersistentState::new(output_dir)?);
 
         // Create the run logger internally
         let run_logger = RunLogger::init(output_dir)?;
         let run_logger = Arc::new(run_logger);
 
-        // Share the mirror state with the logger
-        run_logger.set_mirror_state(Arc::new(mirror_state.clone()));
+        // TODO: Phase 5 - Update RunLogger to work with PersistentState directly
+        // For now, we'll create a temporary mirror_state for compatibility
+        let mirror_state = MirrorState::new(output_dir)?;
+        run_logger.set_mirror_state(Arc::new(mirror_state));
 
         Ok(Self {
             base_url: base_url.to_string(),
@@ -282,16 +260,14 @@ impl WebsiteMirror {
             client,
             file_manager,
             html_parser,
-            visited_urls: Arc::new(Mutex::new(HashSet::new())),
-            download_queue: Arc::new(Mutex::new(BinaryHeap::new())),
-            mirror_state,
+            state,
             run_logger,
         })
     }
 
     fn build_http_client() -> Result<Client> {
         // Build a simple HTTP client with default SSL handling
-        let proxy =
+        let _proxy =
             reqwest::Proxy::all("https://user-spxihizegc:wk0c88X0N~nRibgUxm@gate.decodo.com:7000")?;
         let client = ClientBuilder::new()
             .use_rustls_tls()
@@ -303,14 +279,40 @@ impl WebsiteMirror {
         Ok(client)
     }
 
-    /// Get statistics from the MirrorState
+    /// Get statistics from the PersistentState
     pub fn get_mirror_state_statistics(&self) -> crate::mirror_state::Statistics {
-        self.mirror_state.get_statistics()
+        // TODO: Phase 5 - This entire method will be removed when RunLogger uses PersistentState directly
+        let stats = self.state.get_statistics();
+
+        // Convert HashMap to DownloadStats structure (temporary compatibility layer)
+        let mut download_stats = crate::mirror_state::DownloadStats::default();
+        for (resource_type, count) in stats.downloads {
+            let resource_stats = crate::mirror_state::ResourceStats {
+                success: count,
+                error: 0,
+                bytes: 0,  // TODO: Phase 5 - Track bytes per resource type in PersistentState
+            };
+            match resource_type.as_str() {
+                "html" | "link" => download_stats.html = resource_stats,
+                "css" => download_stats.css = resource_stats,
+                "javascript" | "js" => download_stats.js = resource_stats,
+                "image" => download_stats.images = resource_stats,
+                _ => download_stats.other = resource_stats,
+            }
+        }
+
+        crate::mirror_state::Statistics {
+            urls_discovered: stats.urls_discovered,
+            downloads: download_stats,
+            total_bytes: stats.total_bytes,
+            last_updated: chrono::Local::now().to_rfc3339(),
+        }
     }
 
     /// Get a reference to the MirrorState for sharing
     pub fn get_mirror_state(&self) -> Arc<MirrorState> {
-        Arc::new(self.mirror_state.clone())
+        // TODO: Phase 5 - Remove this method entirely
+        Arc::new(MirrorState::new(&self.output_dir).unwrap())
     }
 
     /// Get a reference to the RunLogger for summary writing
@@ -330,8 +332,7 @@ impl WebsiteMirror {
         // Add the base URL to the download queue with high priority (HTML page)
         // Only add HTML pages if we're not filtering to specific resource types
         if self.only_resources.is_none() || self.should_process_resource_type(&ResourceType::Link) {
-            let mut queue = self.download_queue.lock().unwrap();
-            queue.push(DownloadTask {
+            self.state.enqueue(DownloadTask {
                 url: self.base_url.clone(),
                 depth: 0,
                 priority: DownloadPriority::High,
@@ -350,10 +351,8 @@ impl WebsiteMirror {
 
         // Process the download queue
         loop {
-            let download_task = {
-                let mut queue = self.download_queue.lock().unwrap();
-                queue.pop()
-            };
+            // Use PersistentState dequeue which automatically moves URL to processing
+            let download_task = self.state.dequeue();
 
             if let Some(task) = download_task {
                 let url = task.url.clone();
@@ -367,9 +366,9 @@ impl WebsiteMirror {
 
                 let client = self.client.clone();
                 let file_manager = self.file_manager.clone();
-                let visited_urls = self.visited_urls.clone();
-                let download_queue = self.download_queue.clone();
-                let mirror_state = self.mirror_state.clone();
+                let state = self.state.clone();
+                // TODO: Phase 5 - Remove MirrorState dependency completely
+                let mirror_state = MirrorState::new(&self.output_dir).unwrap();
 
                 progress_bar.set_message(format!("Downloading: {}", url));
 
@@ -382,8 +381,7 @@ impl WebsiteMirror {
                     &file_manager,
                     &url,
                     depth,
-                    &visited_urls,
-                    &download_queue,
+                    &state,
                     &mirror_state,
                     &base_url,
                     priority,
@@ -415,13 +413,13 @@ impl WebsiteMirror {
                 }
             } else {
                 // Check if all downloads are complete
-                let queue_size = self.download_queue.lock().unwrap().len();
+                let queue_size = self.state.queue_size();
 
                 if queue_size == 0 {
                     // Wait a bit for any ongoing downloads to complete
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-                    let final_queue_size = self.download_queue.lock().unwrap().len();
+                    let final_queue_size = self.state.queue_size();
                     if final_queue_size == 0 {
                         break;
                     }
@@ -441,8 +439,7 @@ impl WebsiteMirror {
         file_manager: &FileManager,
         url: &str,
         depth: usize,
-        visited_urls: &Arc<Mutex<HashSet<String>>>,
-        download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
+        state: &Arc<PersistentState>,
         mirror_state: &MirrorState,
         base_url: &str,
         only_resources: &Option<Vec<String>>,
@@ -651,20 +648,17 @@ impl WebsiteMirror {
             }
 
             // Then queue for crawling as before
-            let normalized_url = UrlMapper::normalize_root_url(&resource.resolved);
-            if !visited_urls.lock().unwrap().contains(&normalized_url) {
-                let mut queue = download_queue.lock().unwrap();
-                queue.push(DownloadTask {
-                    url: resource.resolved.clone(),
-                    depth: depth + 1,
-                    priority: DownloadPriority::High,
-                    resource_type: Some(resource.resource_type.clone()),
-                });
-                log::info!(
+            // PersistentState enqueue handles deduplication internally
+            state.enqueue(DownloadTask {
+                url: resource.resolved.clone(),
+                depth: depth + 1,
+                priority: DownloadPriority::High,
+                resource_type: Some(resource.resource_type.clone()),
+            });
+            log::info!(
                     "⚡ Queued HIGH priority HTML page: {}",
                     resource.resolved
                 );
-            }
         }
 
         // Download normal priority resources (images, etc.)
@@ -878,8 +872,7 @@ impl WebsiteMirror {
         file_manager: &FileManager,
         url: &str,
         depth: usize,
-        visited_urls: &Arc<Mutex<HashSet<String>>>,
-        download_queue: &Arc<Mutex<BinaryHeap<DownloadTask>>>,
+        state: &Arc<PersistentState>,
         mirror_state: &MirrorState,
         base_url: &str,
         priority: DownloadPriority,
@@ -888,15 +881,9 @@ impl WebsiteMirror {
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<ProcessResult> {
-        // Check if already visited (normalize root URLs to avoid duplicates)
-        {
-            let normalized_url = UrlMapper::normalize_root_url(url);
-            let mut visited = visited_urls.lock().unwrap();
-            if visited.contains(&normalized_url) {
-                return Ok(ProcessResult::AlreadyVisited);
-            }
-            visited.insert(normalized_url);
-        }
+        // PersistentState already handles deduplication via dequeue
+        // The URL is already moved to processing when dequeued
+        // So we don't need a separate visited check here
 
         let priority_str = match priority {
             DownloadPriority::Critical => "🔥 CRITICAL",
@@ -914,8 +901,7 @@ impl WebsiteMirror {
                     file_manager,
                     url,
                     depth,
-                    visited_urls,
-                    download_queue,
+                    state,
                     mirror_state,
                     base_url,
                     only_resources,
