@@ -67,7 +67,8 @@ cargo update
 - **`html_parser.rs`** - HTML parsing and resource extraction using html5ever
 - **`file_manager.rs`** - File system operations, directory management, and WebP conversion
 - **`lib.rs`** - Module exports and public API
-- **`mirror_state.rs`** - Tracking the status of each file and summary statistics to allow for crawl resumption and visibility into progress
+- **`persistent_state.rs`** (planned) - Persistent crawl state management for reliable resumption
+- **`mirror_state.rs`** (to be replaced) - Current state tracking, will be replaced by persistent_state.rs
 
 ### Key Components
 
@@ -95,12 +96,55 @@ cargo update
 3. **External resource handling**: Downloads from CDNs, AWS S3, etc.
 4. **Path resolution**: Converts all resource and HTML URLs to relative local paths, and keeps a log of the url -> local path map in the state file.
 
-### resumption
+### Persistent State & Resumption (New Architecture)
 
-It's possible to resume an interrupted download. For each url we want to download, the system will first check the disk to see if it exists already. If it already
-exists, it is assumed that all resources have also been downloaded, so they are not retried. However, we need to extract the links from the html and add them
-to the queue to continue crawling. The links will be in relative local path format however, so we turn them back into urls before queueing them by searching through
-the state file for the corresponding local path.
+The system is transitioning to a fully persistent state model that enables reliable crawl resumption:
+
+#### Current Issues (Being Replaced)
+The current approach tries to reconstruct URLs from saved HTML files with rewritten local paths, which is fragile and complex because:
+- URL → local path transformation is lossy and can't be reliably reversed
+- State is only saved after successful downloads, missing pending resources
+- Complex logic needed to extract and reverse-map links from saved HTML
+
+#### New Persistent State Model (See PERSISTED_STATE.md)
+The new architecture persists ALL crawl state to disk continuously:
+- **Queue persistence**: Crawl queue saved to disk, no need to reconstruct from HTML
+- **Visited tracking**: Downloaded and errored URLs tracked persistently
+- **Processing state**: URLs being processed are tracked, moved back to queue on restart
+- **Automatic resumption**: Run the same command again to continue from where it left off
+- **Crash recovery**: Handles interruptions gracefully with no lost work
+
+State file structure (`output_dir/.mirror/state.json`):
+```json
+{
+  "statistics": {
+    "urls_discovered": 1500,
+    "downloads": { "html": 50, "css": 20, "js": 15, "images": 200 },
+    "total_bytes": 104857600
+  },
+  "queue": [
+    { "url": "https://example.com/page2", "depth": 1, "priority": "High", "resource_type": "Link" }
+  ],
+  "processing": [ "https://example.com/page3" ],
+  "downloaded": {
+    "https://example.com/index.html": {
+      "local_path": "example.com/index.html",
+      "resource_type": "html",
+      "size_bytes": 10240,
+      "downloaded_at": "2025-09-25T10:30:00Z"
+    }
+  },
+  "errored": {
+    "https://example.com/broken.jpg": {
+      "error_message": "404 Not Found",
+      "attempted_at": "2025-09-25T10:31:00Z",
+      "resource_type": "image"
+    }
+  }
+}
+```
+
+This eliminates all the complex resumption logic and provides true fault tolerance.
 
 ### Testing Strategy
 
