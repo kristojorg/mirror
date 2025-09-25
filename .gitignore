@@ -22,3 +22,5 @@ target
 .idea/g
 
 sites
+
+.DS_Store
