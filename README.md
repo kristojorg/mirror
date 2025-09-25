@@ -47,6 +47,8 @@ A powerful CLI utility written in Rust for mirroring websites by downloading sta
 - 🖼️ **External Image Resolution**: Automatically converts external CDN image URLs to local paths
 - ⚡ **Priority Processing**: CSS/JS first, then HTML, then images for optimal offline rendering
 - 🖼️ **WebP Conversion**: Automatically converts JPEG/PNG images to WebP for better compression
+- 🔄 **Automatic Resumption**: Crawls can be interrupted and resumed from where they left off
+- 💾 **Persistent State**: All crawl progress saved to disk for fault tolerance
 
 ## 🎯 **Zero 404 Guarantee**
 
@@ -276,11 +278,13 @@ cargo install --path .
 ## How It Works
 
 1. **Initialization**: Sets up HTTP client with SSL certificate handling
-2. **Crawling**: Starts from the base URL and discovers linked pages
-3. **Resource Extraction**: Parses HTML to find CSS, JavaScript, and image files
-4. **Download**: Downloads all discovered resources concurrently
-5. **Link Conversion**: Converts all links to work with local file structure
-6. **File Organization**: Creates directories and saves files with proper extensions
+2. **State Management**: Loads or creates persistent crawl state from `.mirror/state.json`
+3. **Crawling**: Starts from the base URL and discovers linked pages
+4. **Resource Extraction**: Parses HTML to find CSS, JavaScript, and image files
+5. **Download**: Downloads all discovered resources concurrently with priority ordering
+6. **Link Conversion**: Converts all links to work with local file structure
+7. **File Organization**: Creates directories and saves files with proper extensions
+8. **State Persistence**: Continuously saves progress to enable resumption
 
 ## 📁 File Structure
 
@@ -288,6 +292,8 @@ The mirrored website will maintain a structure similar to the original. Here's a
 
 ```
 mirrored_site/
+├── .mirror/
+│   └── state.json          # Persistent crawl state (queue, downloaded, errors)
 ├── index.html
 ├── _css/
 │   └── 2025.01/
@@ -347,12 +353,57 @@ The utility automatically handles SSL certificates using the system's trusted ro
 - Self-signed certificates (with proper configuration)
 - Certificate chain validation
 
+## 🔄 Resumption & Fault Tolerance
+
+The mirror tool now supports full crawl resumption with persistent state management:
+
+### Automatic Resume
+- If a crawl is interrupted (Ctrl+C, power failure, crash), simply run the same command again
+- The tool automatically detects the existing state file at `output_dir/.mirror/state.json`
+- Crawling continues from exactly where it left off, with no duplicate downloads
+
+### Persistent State Structure
+The state file tracks:
+```json
+{
+  "statistics": {
+    "urls_discovered": 1500,
+    "downloads": { "html": 50, "css": 20, "js": 15, "images": 200 },
+    "total_bytes": 104857600
+  },
+  "queue": [          // URLs waiting to be processed
+    {"url": "https://example.com/page2", "depth": 1, "priority": "High"}
+  ],
+  "processing": [],   // URLs being processed (moved back to queue on restart)
+  "downloaded": {     // Successfully downloaded resources
+    "https://example.com/index.html": {
+      "local_path": "example.com/index.html",
+      "size_bytes": 10240,
+      "resource_type": "html"
+    }
+  },
+  "errored": {        // Failed downloads with error details
+    "https://example.com/broken.jpg": {
+      "error_message": "404 Not Found",
+      "resource_type": "image"
+    }
+  }
+}
+```
+
+### Benefits
+- **No Lost Work**: Every URL processed is tracked persistently
+- **Crash Recovery**: "Processing" URLs automatically return to queue on restart
+- **Efficient Resume**: No re-downloading or re-processing of completed work
+- **Debug-Friendly**: JSON state file is human-readable for troubleshooting
+
 ## Performance Considerations
 
 - **Concurrent Downloads**: Adjust `--max-concurrent` based on your system and network
 - **Depth Limits**: Use `--max-depth` to control crawling depth and prevent infinite loops
 - **Timeout Settings**: Increase `--timeout` for slow servers or large files
 - **External Resources**: Enable `--download-external` only when needed
+- **State Persistence**: State file writes are optimized to not impact performance
 
 ## 🧪 Testing & Verification
 

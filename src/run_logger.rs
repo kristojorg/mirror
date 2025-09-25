@@ -204,6 +204,9 @@ impl RunLogger {
 
     /// Write summary at the end of the run
     pub fn write_summary(&self, summary: RunSummary) -> Result<()> {
+        // Get run stats for this session
+        let run_stats = self.run_stats.lock().unwrap().clone();
+
         // Print final summary to terminal
         println!("\n========================================");
         println!("Site Summary");
@@ -225,6 +228,24 @@ impl RunLogger {
             );
         }
         println!("Total size: {}", HumanBytes(summary.total_bytes));
+        println!("========================================");
+
+        // Print run-specific summary
+        println!("\n========================================");
+        println!("This Run Summary");
+        println!("========================================");
+        println!(
+            "Downloaded: {} files",
+            HumanCount(run_stats.downloaded as u64)
+        );
+        println!(
+            "Skipped: {} files (already existed)",
+            HumanCount(run_stats.skipped as u64)
+        );
+        if run_stats.errors > 0 {
+            println!("Errors: {}", HumanCount(run_stats.errors as u64));
+        }
+        println!("Data downloaded: {}", HumanBytes(run_stats.bytes));
         println!("========================================");
 
         // Write detailed summary to file
@@ -267,6 +288,30 @@ impl RunLogger {
                 summary.total_bytes
             );
             let _ = file.write_all(msg.as_bytes());
+
+            // Add run-specific summary to log file
+            let run_msg = format!(
+                "[{}] [INFO] ========================================\n\
+                 [{}] [INFO] This Run Summary\n\
+                 [{}] [INFO] ========================================\n\
+                 [{}] [INFO] Downloaded: {} files\n\
+                 [{}] [INFO] Skipped: {} files (already existed)\n\
+                 [{}] [INFO] Errors: {}\n\
+                 [{}] [INFO] Data downloaded: {} ({} bytes)\n",
+                timestamp,
+                timestamp,
+                timestamp,
+                timestamp,
+                HumanCount(run_stats.downloaded as u64),
+                timestamp,
+                HumanCount(run_stats.skipped as u64),
+                timestamp,
+                HumanCount(run_stats.errors as u64),
+                timestamp,
+                HumanBytes(run_stats.bytes),
+                run_stats.bytes
+            );
+            let _ = file.write_all(run_msg.as_bytes());
 
             if !summary.errors.is_empty() {
                 let errors_msg =

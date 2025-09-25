@@ -9,11 +9,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::file_manager::FileManager;
-use crate::html_parser::{HtmlParser, ResourceType};
+use crate::html_parser::{HtmlParser, ParseContext, ResourceType};
 use crate::html_rewriter::HtmlRewriter;
 use crate::mirror_state::MirrorState;
 use crate::run_logger::RunLogger;
 use crate::url_mapper::UrlMapper;
+use url::Url;
 use webp::Encoder;
 
 /// Result of processing a URL
@@ -291,9 +292,12 @@ impl WebsiteMirror {
 
     fn build_http_client() -> Result<Client> {
         // Build a simple HTTP client with default SSL handling
+        let proxy =
+            reqwest::Proxy::all("https://user-spxihizegc:wk0c88X0N~nRibgUxm@gate.decodo.com:7000")?;
         let client = ClientBuilder::new()
             .use_rustls_tls()
-            .user_agent("WebsiteMirror/1.0")
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            // .proxy(proxy)
             .timeout(std::time::Duration::from_secs(480))
             .build()?;
 
@@ -461,13 +465,19 @@ impl WebsiteMirror {
             return Ok(());
         }
 
-        let resources = if existing_file_mode {
-            // For existing files with rewritten paths, don't resolve URLs
-            page_html_parser.extract_resources_with_mode(html_content, true)?
+        let context = if existing_file_mode {
+            // For existing files, we need the local path of the HTML file
+            // The caller should provide this, but for now create it from the URL
+            let url_mapper = UrlMapper::new(false)?;
+            let local_html_path = url_mapper.url_to_local_path(current_page_url, &ResourceType::Link)?;
+            ParseContext::LocalFile(local_html_path)
         } else {
-            // For fresh downloads, resolve URLs normally
-            page_html_parser.extract_resources(html_content)?
+            // For fresh downloads, use the page URL
+            let page_url = Url::parse(current_page_url)?;
+            ParseContext::WebPage(page_url)
         };
+
+        let resources = page_html_parser.extract_resources(html_content, context)?;
 
         log::debug!("🔍 Extracted {} resources from HTML", resources.len());
         for r in &resources {
@@ -481,7 +491,7 @@ impl WebsiteMirror {
                     ResourceType::Other => "Other",
                 },
                 r.original_url,
-                r.absolute_url,
+                r.resolved,
                 if existing_file_mode {
                     "will lookup in mirror_state"
                 } else {
@@ -497,73 +507,44 @@ impl WebsiteMirror {
                 // We need to convert them back to absolute URLs using the mirror state
                 let url_to_queue = if existing_file_mode {
                     if let Some(state) = mirror_state {
-                        // The resource.absolute_url contains a relative path from the HTML
-                        // We need to resolve it relative to the current HTML file's directory
-                        // to get the full local path, then look that up in mirror_state
+                        log::error!("Resource URL: {}", resource.resolved);
+                        // The resource.resolved now contains a path relative to output dir
+                        // We can look it up directly in mirror_state
+                        log::info!(
+                            "🔍 Processing link from existing file: current_page_url={}, link={}",
+                            current_page_url,
+                            resource.resolved
+                        );
 
-                        // The paths in mirror_state look like "www.scrapethissite.com/pages/index.html"
-                        // The paths in saved HTML look like "pages/index.html" (relative to current file)
-                        // We need to resolve these relative to the current HTML's location
-
-                        // Get the current page's local path - we MUST have this since we're reading an existing file
-                        let url_mapper = match UrlMapper::new(false) {
-                            Ok(mapper) => mapper,
-                            Err(e) => {
-                                log::error!("Failed to create UrlMapper: {}", e);
-                                continue;
-                            }
-                        };
-                        let current_local_path = match url_mapper
-                            .url_to_local_path(current_page_url, &ResourceType::Link)
-                        {
-                            Ok(path) => path,
-                            Err(e) => {
-                                log::error!(
-                                    "Failed to get local path for {}: {}",
-                                    current_page_url,
-                                    e
-                                );
-                                continue;
-                            }
-                        };
-
-                        // Get the directory of the current page
-                        let current_dir = current_local_path
-                            .parent()
-                            .expect("Current page path must have a parent directory")
-                            .to_string_lossy();
-
-                        // Resolve the relative path from the HTML
-                        let local_path = if resource.absolute_url.starts_with("http") {
-                            // This is an external URL that wasn't rewritten (because it's external)
-                            // We should skip it silently
+                        // Check if it's an external URL that wasn't rewritten
+                        let local_path = if resource.resolved.starts_with("http") {
+                            log::debug!(
+                                "⏩ Skipping external URL in saved HTML: {}",
+                                resource.resolved
+                            );
                             continue; // Skip external links
                         } else {
-                            // Use path joining to resolve relative paths properly
-                            let path = std::path::Path::new(current_dir.as_ref())
-                                .join(&resource.absolute_url);
-                            // Convert to string and normalize
-                            path.to_string_lossy().to_string()
+                            // The resource.resolved is already a path relative to output dir
+                            resource.resolved.clone()
                         };
 
-                        log::debug!(
-                            "📂 Looking up local path in mirror_state: {} (from relative: {})",
-                            local_path,
-                            resource.absolute_url
+                        log::info!(
+                            "📂 Looking up local path in mirror_state: {}",
+                            local_path
                         );
 
                         if let Some(original_url) = state.get_url(&local_path) {
-                            log::debug!(
-                                "📂 Converted local path {} back to URL: {}",
-                                resource.absolute_url,
+                            log::info!(
+                                "✅ Converted local path {} back to URL: {}",
+                                local_path,
                                 original_url
                             );
                             original_url
                         } else {
                             // If we can't find it in the state, skip this link
-                            log::debug!(
-                                "⚠️  Could not find URL for local path: {}",
-                                resource.absolute_url
+                            log::warn!(
+                                "⚠️  Could not find URL for local path: {} (searched in state)",
+                                local_path
                             );
                             continue;
                         }
@@ -572,8 +553,8 @@ impl WebsiteMirror {
                         continue;
                     }
                 } else {
-                    // Fresh download - use the absolute URL directly
-                    resource.absolute_url.clone()
+                    // Fresh download - use the resolved URL directly
+                    resource.resolved.clone()
                 };
 
                 if url_to_queue.starts_with(base_url) {
@@ -613,7 +594,9 @@ impl WebsiteMirror {
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<HashMap<String, String>> {
-        let resources = page_html_parser.extract_resources(html_content)?;
+        let page_url = Url::parse(current_page_url)?;
+        let context = ParseContext::WebPage(page_url);
+        let resources = page_html_parser.extract_resources(html_content, context)?;
         let mut url_mappings = HashMap::new();
 
         // Helper function to check if a resource type should be processed
@@ -649,11 +632,11 @@ impl WebsiteMirror {
                     should_process_resource_type(&resource.resource_type)
                 }
                 ResourceType::Link => {
-                    resource.absolute_url.starts_with(base_url)
+                    resource.resolved.starts_with(base_url)
                         && should_process_resource_type(&resource.resource_type)
                 }
                 ResourceType::Other => {
-                    resource.absolute_url.starts_with(base_url)
+                    resource.resolved.starts_with(base_url)
                         && should_process_resource_type(&resource.resource_type)
                 }
             };
@@ -664,7 +647,7 @@ impl WebsiteMirror {
                     DownloadPriority::High => high_resources.push(resource.clone()),
                     DownloadPriority::Normal => normal_resources.push(resource.clone()),
                 }
-            } else if !resource.absolute_url.starts_with(base_url) {
+            } else if !resource.resolved.starts_with(base_url) {
                 match resource.resource_type {
                     ResourceType::Link => log::info!(
                         "⏭️  Skipping external page: {} (but will download its media)",
@@ -705,7 +688,7 @@ impl WebsiteMirror {
                 client,
                 file_manager,
                 url_mapper,
-                &resource.absolute_url,
+                &resource.resolved,
                 &resource.resource_type,
                 mirror_state,
                 convert_to_webp,
@@ -716,13 +699,13 @@ impl WebsiteMirror {
                 log::error!(
                     "⚠️  Failed to download CRITICAL {} resource {}: {}",
                     resource_type_str,
-                    resource.absolute_url,
+                    resource.resolved,
                     e
                 );
             } else {
                 // Map original URL to local path for HTML rewriting
                 if let Ok(local_path) =
-                    url_mapper.url_to_local_path(&resource.absolute_url, &resource.resource_type)
+                    url_mapper.url_to_local_path(&resource.resolved, &resource.resource_type)
                 {
                     // Calculate relative path from current HTML to resource
                     if let Ok(current_html_path) =
@@ -741,9 +724,9 @@ impl WebsiteMirror {
         // Process HTML links - add to mappings AND queue for crawling
         for resource in &high_resources {
             // First, add to url_mappings so links get rewritten
-            if resource.absolute_url.starts_with(base_url) {
+            if resource.resolved.starts_with(base_url) {
                 if let Ok(local_path) =
-                    url_mapper.url_to_local_path(&resource.absolute_url, &ResourceType::Link)
+                    url_mapper.url_to_local_path(&resource.resolved, &ResourceType::Link)
                 {
                     if let Ok(current_html_path) =
                         url_mapper.url_to_local_path(current_page_url, &ResourceType::Link)
@@ -762,18 +745,18 @@ impl WebsiteMirror {
             }
 
             // Then queue for crawling as before
-            let normalized_url = UrlMapper::normalize_root_url(&resource.absolute_url);
+            let normalized_url = UrlMapper::normalize_root_url(&resource.resolved);
             if !visited_urls.lock().unwrap().contains(&normalized_url) {
                 let mut queue = download_queue.lock().unwrap();
                 queue.push(DownloadTask {
-                    url: resource.absolute_url.clone(),
+                    url: resource.resolved.clone(),
                     depth: depth + 1,
                     priority: DownloadPriority::High,
                     resource_type: Some(resource.resource_type.clone()),
                 });
                 log::info!(
                     "⚡ Queued HIGH priority HTML page: {}",
-                    resource.absolute_url
+                    resource.resolved
                 );
             }
         }
@@ -795,7 +778,7 @@ impl WebsiteMirror {
                 client,
                 file_manager,
                 url_mapper,
-                &resource.absolute_url,
+                &resource.resolved,
                 &resource.resource_type,
                 mirror_state,
                 convert_to_webp,
@@ -806,13 +789,13 @@ impl WebsiteMirror {
                 log::error!(
                     "⚠️  Failed to download NORMAL {} resource {}: {}",
                     resource_type_str,
-                    resource.absolute_url,
+                    resource.resolved,
                     e
                 );
             } else {
                 // Map original URL to local path for HTML rewriting
                 if let Ok(local_path) =
-                    url_mapper.url_to_local_path(&resource.absolute_url, &resource.resource_type)
+                    url_mapper.url_to_local_path(&resource.resolved, &resource.resource_type)
                 {
                     // Calculate relative path from current HTML to resource
                     if let Ok(current_html_path) =
@@ -1071,8 +1054,10 @@ impl WebsiteMirror {
 
         // Extract background images from CSS
         let mut background_resources = Vec::new();
+        let css_url = Url::parse(url)?;
+        let context = ParseContext::WebPage(css_url);
         page_html_parser
-            .extract_background_images_from_css(&css_content, &mut background_resources);
+            .extract_background_images_from_css(&css_content, &mut background_resources, &context);
 
         // Download background images with normal priority (after CSS/JS)
         for resource in &background_resources {
@@ -1082,7 +1067,7 @@ impl WebsiteMirror {
                 client,
                 file_manager,
                 &url_mapper,
-                &resource.absolute_url,
+                &resource.resolved,
                 &ResourceType::Image,
                 mirror_state,
                 convert_to_webp,
@@ -1092,7 +1077,7 @@ impl WebsiteMirror {
             {
                 log::error!(
                     "⚠️  Failed to download background image {}: {}",
-                    resource.absolute_url,
+                    resource.resolved,
                     e
                 );
             }
