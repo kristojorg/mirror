@@ -4,6 +4,7 @@ pub mod file_manager;
 pub mod html_parser;
 pub mod html_rewriter;
 pub mod mirror_state;
+pub mod persistent_state;
 pub mod run_logger;
 pub mod url_mapper;
 

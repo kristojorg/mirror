@@ -27,7 +27,7 @@ pub enum ProcessResult {
     Error(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DownloadPriority {
     Critical = 0, // CSS and JavaScript files
     High = 1,     // HTML pages

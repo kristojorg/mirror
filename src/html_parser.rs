@@ -19,7 +19,7 @@ pub struct ResourceLink {
     pub resource_type: ResourceType,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResourceType {
     CSS,
     JavaScript,
