@@ -1,15 +1,8 @@
 use anyhow::{Context, Result};
 use select::document::Document;
 use select::predicate::{Attr, Name};
-use std::path::{Path, PathBuf};
 use url::Url;
 
-/// Context for parsing resources - indicates whether we're processing a web page or local file
-#[derive(Debug)]
-pub enum ParseContext {
-    WebPage(Url),        // For fresh downloads - the page's URL
-    LocalFile(PathBuf),  // For saved files - path relative to output dir
-}
 
 /// Represents a resource found in HTML content
 #[derive(Debug, Clone)]
@@ -43,11 +36,10 @@ impl HtmlParser {
         Ok(Self { base_url })
     }
 
-    /// Extract all resources from HTML content based on parsing context
+    /// Extract all resources from HTML content
     pub fn extract_resources(
         &self,
         html_content: &str,
-        context: ParseContext,
     ) -> Result<Vec<ResourceLink>> {
         let document = Document::from(html_content);
         let mut resources = Vec::new();
@@ -58,7 +50,7 @@ impl HtmlParser {
                 if let Some(rel) = link.attr("rel") {
                     if rel.contains("stylesheet") {
                         if let Ok(resource) =
-                            self.create_resource_link(href, ResourceType::CSS, &context)
+                            self.create_resource_link(href, ResourceType::CSS)
                         {
                             resources.push(resource);
                         }
@@ -71,7 +63,7 @@ impl HtmlParser {
         for script in document.find(Name("script")) {
             if let Some(src) = script.attr("src") {
                 if let Ok(resource) =
-                    self.create_resource_link(src, ResourceType::JavaScript, &context)
+                    self.create_resource_link(src, ResourceType::JavaScript)
                 {
                     resources.push(resource);
                 }
@@ -82,7 +74,7 @@ impl HtmlParser {
         for img in document.find(Name("img")) {
             if let Some(src) = img.attr("src") {
                 if let Ok(resource) =
-                    self.create_resource_link(src, ResourceType::Image, &context)
+                    self.create_resource_link(src, ResourceType::Image)
                 {
                     resources.push(resource);
                 }
@@ -92,7 +84,7 @@ impl HtmlParser {
         // Extract background images from inline styles
         for element in document.find(Attr("style", ())) {
             if let Some(style) = element.attr("style") {
-                self.extract_background_images_from_css(style, &mut resources, &context);
+                self.extract_background_images_from_css(style, &mut resources);
             }
         }
 
@@ -100,7 +92,7 @@ impl HtmlParser {
         for link in document.find(Name("a")) {
             if let Some(href) = link.attr("href") {
                 if let Ok(resource) =
-                    self.create_resource_link(href, ResourceType::Link, &context)
+                    self.create_resource_link(href, ResourceType::Link)
                 {
                     resources.push(resource);
                 }
@@ -110,12 +102,11 @@ impl HtmlParser {
         Ok(resources)
     }
 
-    /// Create a resource link with resolved URL or path based on context
+    /// Create a resource link with resolved URL
     fn create_resource_link(
         &self,
         url: &str,
         resource_type: ResourceType,
-        context: &ParseContext,
     ) -> Result<ResourceLink> {
         // Skip data URLs and other special schemes
         if url.starts_with("data:")
@@ -127,7 +118,7 @@ impl HtmlParser {
             return Err(anyhow::anyhow!("Special URL scheme not supported"));
         }
 
-        // If it's already absolute, use as-is regardless of context
+        // If it's already absolute, use as-is
         if url.starts_with("http://") || url.starts_with("https://") {
             return Ok(ResourceLink {
                 original_url: url.to_string(),
@@ -136,19 +127,8 @@ impl HtmlParser {
             });
         }
 
-        // Now handle relative URLs based on context
-        let resolved = match context {
-            ParseContext::WebPage(_base_url) => {
-                // Fresh download - resolve to absolute URL
-                self.resolve_url(url)?.to_string()
-            }
-            ParseContext::LocalFile(html_path) => {
-                // Resolve relative path to output-dir-relative path
-                let html_dir = html_path.parent().unwrap_or(Path::new(""));
-                let resolved_path = html_dir.join(url);
-                resolved_path.to_string_lossy().to_string()
-            }
-        };
+        // Resolve relative URLs to absolute URLs
+        let resolved = self.resolve_url(url)?.to_string();
 
         Ok(ResourceLink {
             original_url: url.to_string(),
@@ -177,7 +157,6 @@ impl HtmlParser {
         &self,
         css_content: &str,
         resources: &mut Vec<ResourceLink>,
-        context: &ParseContext,
     ) {
         // Extract background-image URLs from CSS content
         let background_patterns = [
@@ -190,7 +169,7 @@ impl HtmlParser {
                 for cap in regex.captures_iter(css_content) {
                     if let Some(url) = cap.get(1) {
                         if let Ok(resource) =
-                            self.create_resource_link(url.as_str(), ResourceType::Image, context)
+                            self.create_resource_link(url.as_str(), ResourceType::Image)
                         {
                             resources.push(resource);
                         }
@@ -204,7 +183,6 @@ impl HtmlParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use url::Url;
 
     #[test]
     fn test_new_html_parser() {
@@ -234,9 +212,7 @@ mod tests {
         "#;
 
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let base_url = Url::parse("https://example.com").unwrap();
-        let context = ParseContext::WebPage(base_url);
-        let resources = parser.extract_resources(html_content, context).unwrap();
+        let resources = parser.extract_resources(html_content).unwrap();
 
         assert_eq!(resources.len(), 4);
 
@@ -293,9 +269,7 @@ mod tests {
         "#;
 
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let base_url = Url::parse("https://example.com").unwrap();
-        let context = ParseContext::WebPage(base_url);
-        let resources = parser.extract_resources(html_content, context).unwrap();
+        let resources = parser.extract_resources(html_content).unwrap();
 
         assert_eq!(resources.len(), 3);
 
@@ -328,9 +302,7 @@ mod tests {
         "#;
 
         let parser = HtmlParser::new("https://example.com/subdir/").unwrap();
-        let base_url = Url::parse("https://example.com/subdir/").unwrap();
-        let context = ParseContext::WebPage(base_url);
-        let resources = parser.extract_resources(html_content, context).unwrap();
+        let resources = parser.extract_resources(html_content).unwrap();
 
         assert_eq!(resources.len(), 3);
 
@@ -353,9 +325,7 @@ mod tests {
         "#;
 
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let base_url = Url::parse("https://example.com").unwrap();
-        let context = ParseContext::WebPage(base_url);
-        let resources = parser.extract_resources(html_content, context).unwrap();
+        let resources = parser.extract_resources(html_content).unwrap();
 
         // Data URLs should be ignored
         assert_eq!(resources.len(), 0);
@@ -376,9 +346,7 @@ mod tests {
         "#;
 
         let parser = HtmlParser::new("https://example.com").unwrap();
-        let base_url = Url::parse("https://example.com").unwrap();
-        let context = ParseContext::WebPage(base_url);
-        let resources = parser.extract_resources(html_content, context).unwrap();
+        let resources = parser.extract_resources(html_content).unwrap();
 
         // Should still extract what it can
         assert!(resources.len() > 0);
@@ -417,9 +385,7 @@ mod tests {
 
         let parser = HtmlParser::new("https://example.com").unwrap();
         let mut resources = Vec::new();
-        let base_url = Url::parse("https://example.com").unwrap();
-        let context = ParseContext::WebPage(base_url);
-        parser.extract_background_images_from_css(css_content, &mut resources, &context);
+        parser.extract_background_images_from_css(css_content, &mut resources);
 
         assert_eq!(resources.len(), 3);
 
@@ -438,9 +404,7 @@ mod tests {
 
         let parser = HtmlParser::new("https://example.com").unwrap();
         let mut resources = Vec::new();
-        let base_url = Url::parse("https://example.com").unwrap();
-        let context = ParseContext::WebPage(base_url);
-        parser.extract_background_images_from_css(css_content, &mut resources, &context);
+        parser.extract_background_images_from_css(css_content, &mut resources);
 
         assert_eq!(resources.len(), 2);
     }
@@ -454,9 +418,7 @@ mod tests {
 
         let parser = HtmlParser::new("https://example.com").unwrap();
         let mut resources = Vec::new();
-        let base_url = Url::parse("https://example.com").unwrap();
-        let context = ParseContext::WebPage(base_url);
-        parser.extract_background_images_from_css(css_content, &mut resources, &context);
+        parser.extract_background_images_from_css(css_content, &mut resources);
 
         assert_eq!(resources.len(), 0);
     }

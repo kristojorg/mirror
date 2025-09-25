@@ -88,7 +88,7 @@ state.get_statistics() -> Statistics;     // Computed on-the-fly
 }
 ```
 
-## Phase 2: Remove Complex Resumption Logic
+## ✅ Phase 2: COMPLETED - Remove Complex Resumption Logic
 
 **Goal**: Remove the complex code that tries to reconstruct URLs from saved HTML files. This code is no longer needed since PersistentState tracks everything.
 
