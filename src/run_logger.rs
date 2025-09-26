@@ -264,7 +264,6 @@ impl RunLogger {
         println!("\n========================================");
         println!("Site Summary");
         println!("========================================");
-        println!("Duration: {}", summary.duration);
         println!(
             "Total files: {}",
             HumanCount(summary.successful_downloads as u64)
@@ -287,6 +286,7 @@ impl RunLogger {
         println!("\n========================================");
         println!("This Run Summary");
         println!("========================================");
+        println!("Duration: {}", summary.duration);
         println!(
             "Downloaded: {} files",
             HumanCount(run_stats.downloaded as u64)
@@ -308,7 +308,6 @@ impl RunLogger {
                 "[{}] [INFO] ========================================\n\
                  [{}] [INFO] Site Summary\n\
                  [{}] [INFO] ========================================\n\
-                 [{}] [INFO] Duration: {}\n\
                  [{}] [INFO] Total files: {}\n\
                  [{}] [INFO]   HTML pages: {}\n\
                  [{}] [INFO]   CSS files: {}\n\
@@ -320,8 +319,6 @@ impl RunLogger {
                 timestamp,
                 timestamp,
                 timestamp,
-                timestamp,
-                summary.duration,
                 timestamp,
                 HumanCount(summary.successful_downloads as u64),
                 timestamp,
@@ -347,6 +344,7 @@ impl RunLogger {
                 "[{}] [INFO] ========================================\n\
                  [{}] [INFO] This Run Summary\n\
                  [{}] [INFO] ========================================\n\
+                 [{}] [INFO] Duration: {}\n\
                  [{}] [INFO] Downloaded: {} files\n\
                  [{}] [INFO] Skipped: {} files (already existed)\n\
                  [{}] [INFO] Errors: {}\n\
@@ -354,6 +352,8 @@ impl RunLogger {
                 timestamp,
                 timestamp,
                 timestamp,
+                timestamp,
+                summary.duration,
                 timestamp,
                 HumanCount(run_stats.downloaded as u64),
                 timestamp,
