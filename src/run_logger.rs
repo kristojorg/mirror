@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::mirror_state::MirrorState;
+use crate::persistent_state::PersistentState;
 
 /// Runtime statistics for the current run only
 #[derive(Debug, Default, Clone)]
@@ -25,7 +25,7 @@ pub struct RunLogger {
     log_file: Arc<Mutex<File>>,
     run_dir: PathBuf,
     start_time: Instant,
-    mirror_state: Arc<Mutex<Option<Arc<MirrorState>>>>,
+    persistent_state: Arc<Mutex<Option<Arc<PersistentState>>>>,
     multi_progress: MultiProgress,
     stats_bar: ProgressBar,
     run_stats: Arc<Mutex<RunStats>>, // Stats for this run only
@@ -113,7 +113,7 @@ impl RunLogger {
             log_file,
             run_dir,
             start_time: Instant::now(),
-            mirror_state: Arc::new(Mutex::new(None)),
+            persistent_state: Arc::new(Mutex::new(None)),
             multi_progress,
             stats_bar,
             run_stats: Arc::new(Mutex::new(RunStats::default())),
@@ -130,10 +130,10 @@ impl RunLogger {
         &self.run_dir
     }
 
-    /// Set the mirror state for pulling statistics
-    pub fn set_mirror_state(&self, state: Arc<MirrorState>) {
-        let mut mirror_state = self.mirror_state.lock().unwrap();
-        *mirror_state = Some(state);
+    /// Set the persistent state for pulling statistics
+    pub fn set_persistent_state(&self, state: Arc<PersistentState>) {
+        let mut persistent_state = self.persistent_state.lock().unwrap();
+        *persistent_state = Some(state);
     }
 
     /// Track a file that was actually downloaded this run
@@ -158,7 +158,7 @@ impl RunLogger {
     /// Start a background thread to update the stats display
     fn start_stats_updater(&self) {
         let stats_bar = self.stats_bar.clone();
-        let mirror_state = Arc::clone(&self.mirror_state);
+        let persistent_state = Arc::clone(&self.persistent_state);
         let run_stats = Arc::clone(&self.run_stats);
         let start_time = self.start_time;
 
@@ -175,14 +175,9 @@ impl RunLogger {
 
             let run = run_stats.lock().unwrap().clone();
 
-            let message = if let Some(ref state) = *mirror_state.lock().unwrap() {
+            let message = if let Some(ref state) = *persistent_state.lock().unwrap() {
                 let stats = state.get_statistics();
-                let downloads = &stats.downloads;
-                let total_success = downloads.html.success
-                    + downloads.css.success
-                    + downloads.js.success
-                    + downloads.images.success
-                    + downloads.other.success;
+                let total_files: usize = stats.downloads.values().sum();
 
                 format!(
                         "⏱  {} │ THIS RUN: ⬇️  {} new │ ⏭️  {} skipped │ ❌ {} errors │ 💾 {} │ TOTAL: 📁 {} files │ 💾 {}",
@@ -191,19 +186,77 @@ impl RunLogger {
                         HumanCount(run.skipped as u64),
                         run.errors,
                         HumanBytes(run.bytes),
-                        HumanCount(total_success as u64),
+                        HumanCount(total_files as u64),
                         HumanBytes(stats.total_bytes)
                     )
             } else {
-                format!("⏱  {} │ Waiting for mirror state...", duration)
+                format!("⏱  {} │ Waiting for persistent state...", duration)
             };
 
             stats_bar.set_message(message);
         });
     }
 
-    /// Write summary at the end of the run
-    pub fn write_summary(&self, summary: RunSummary) -> Result<()> {
+    /// Write summary at the end of the run - creates summary from PersistentState
+    pub fn write_summary(&self, start_time_str: String, duration_str: String, base_url: String) -> Result<()> {
+        // Create summary from persistent state
+        let summary = if let Some(ref state) = *self.persistent_state.lock().unwrap() {
+            let stats = state.get_statistics();
+
+            // Extract data from the native statistics format
+            let pages_crawled = stats.downloads.get("html").copied().unwrap_or(0) +
+                               stats.downloads.get("link").copied().unwrap_or(0);
+            let css_files = stats.downloads.get("css").copied().unwrap_or(0);
+            let js_files = stats.downloads.get("js").copied().unwrap_or(0) +
+                           stats.downloads.get("javascript").copied().unwrap_or(0);
+            let images = stats.downloads.get("image").copied().unwrap_or(0);
+            let other_files = stats.downloads.iter()
+                .filter(|(key, _)| !["html", "link", "css", "js", "javascript", "image"].contains(&key.as_str()))
+                .map(|(_, count)| count)
+                .sum();
+            let total_successful: usize = stats.downloads.values().sum();
+            let total_failed: usize = stats.errors.values().sum();
+            let error_messages = state.get_error_messages();
+
+            RunSummary {
+                start_time: start_time_str,
+                end_time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                duration: duration_str,
+                base_url,
+                pages_crawled,
+                css_files,
+                js_files,
+                images,
+                other_files,
+                successful_downloads: total_successful,
+                failed_downloads: total_failed,
+                total_bytes: stats.total_bytes,
+                errors: error_messages,
+            }
+        } else {
+            // Fallback if no persistent state (shouldn't happen)
+            RunSummary {
+                start_time: start_time_str,
+                end_time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                duration: duration_str,
+                base_url,
+                pages_crawled: 0,
+                css_files: 0,
+                js_files: 0,
+                images: 0,
+                other_files: 0,
+                successful_downloads: 0,
+                failed_downloads: 0,
+                total_bytes: 0,
+                errors: Vec::new(),
+            }
+        };
+
+        self.write_summary_internal(summary)
+    }
+
+    /// Internal method to write an already-created summary
+    fn write_summary_internal(&self, summary: RunSummary) -> Result<()> {
         // Get run stats for this session
         let run_stats = self.run_stats.lock().unwrap().clone();
 

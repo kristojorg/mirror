@@ -3,7 +3,7 @@ use clap::Parser;
 use chrono::Local;
 use std::time::Instant;
 
-use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror, run_logger::RunSummary};
+use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -49,42 +49,9 @@ async fn main() -> Result<()> {
         duration.as_secs() % 60
     );
 
-    // Get statistics from the mirror
-    let mirror_stats = mirror.get_mirror_state_statistics();
-
-    // Calculate total successful and failed downloads
-    let total_successful = mirror_stats.downloads.html.success
-        + mirror_stats.downloads.css.success
-        + mirror_stats.downloads.js.success
-        + mirror_stats.downloads.images.success
-        + mirror_stats.downloads.other.success;
-
-    let total_failed = mirror_stats.downloads.html.error
-        + mirror_stats.downloads.css.error
-        + mirror_stats.downloads.js.error
-        + mirror_stats.downloads.images.error
-        + mirror_stats.downloads.other.error;
-
-    // Create summary
-    let summary = RunSummary {
-        start_time: start_time_str,
-        end_time: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-        duration: duration_str,
-        base_url: args.url.clone(),
-        pages_crawled: mirror_stats.downloads.html.success,
-        css_files: mirror_stats.downloads.css.success,
-        js_files: mirror_stats.downloads.js.success,
-        images: mirror_stats.downloads.images.success,
-        other_files: mirror_stats.downloads.other.success,
-        successful_downloads: total_successful,
-        failed_downloads: total_failed,
-        total_bytes: mirror_stats.total_bytes,
-        errors: Vec::new(), // Error messages are tracked in the state itself
-    };
-
-    // Write summary using the logger from the mirror
+    // Write summary using the logger from the mirror - RunLogger creates summary from PersistentState
     let logger = mirror.get_run_logger();
-    logger.write_summary(summary)?;
+    logger.write_summary(start_time_str, duration_str, args.url.clone())?;
 
     // Log final status
     if result.is_ok() {

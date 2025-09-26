@@ -13,9 +13,12 @@ use crate::url_mapper::UrlMapper;
 #[derive(Debug, Clone, Default)]
 pub struct Statistics {
     pub urls_discovered: usize,
-    pub downloads: HashMap<String, usize>,
+    pub downloads: HashMap<String, usize>,     // resource_type -> success count
+    pub errors: HashMap<String, usize>,        // resource_type -> error count
+    pub bytes_per_type: HashMap<String, u64>,  // resource_type -> total bytes
     pub total_bytes: u64,
 }
+
 
 /// Core state data that gets persisted to disk
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -44,7 +47,7 @@ pub struct ErrorInfo {
 }
 
 /// A task in the download queue
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DownloadTask {
     pub url: String,
     pub depth: usize,
@@ -280,20 +283,39 @@ impl PersistentState {
         let data = self.data.lock().unwrap();
 
         let mut downloads: HashMap<String, usize> = HashMap::new();
+        let mut errors: HashMap<String, usize> = HashMap::new();
+        let mut bytes_per_type: HashMap<String, u64> = HashMap::new();
         let mut total_bytes = 0u64;
 
+        // Count successful downloads and bytes
         for info in data.downloaded.values() {
             let resource_type = info.resource_type.to_lowercase();
-            *downloads.entry(resource_type).or_insert(0) += 1;
+            *downloads.entry(resource_type.clone()).or_insert(0) += 1;
+            *bytes_per_type.entry(resource_type).or_insert(0) += info.size_bytes;
             total_bytes += info.size_bytes;
+        }
+
+        // Count errors by resource type
+        for error_info in data.errored.values() {
+            let resource_type = error_info.resource_type.to_lowercase();
+            *errors.entry(resource_type).or_insert(0) += 1;
         }
 
         Statistics {
             urls_discovered: data.downloaded.len() + data.errored.len() + data.queue.len() + data.processing.len(),
             downloads,
+            errors,
+            bytes_per_type,
             total_bytes,
         }
     }
+
+    /// Get error messages for summary reporting
+    pub fn get_error_messages(&self) -> Vec<String> {
+        let data = self.data.lock().unwrap();
+        data.errored.values().map(|err| err.error_message.clone()).collect()
+    }
+
 
     /// Checks if a URL is already in the queue
     pub fn is_queued(&self, url: &str) -> bool {

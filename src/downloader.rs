@@ -11,7 +11,6 @@ use std::sync::Arc;
 use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
 use crate::html_rewriter::HtmlRewriter;
-use crate::mirror_state::MirrorState;
 use crate::persistent_state::{PersistentState, DownloadTask};
 use crate::run_logger::RunLogger;
 use crate::url_mapper::UrlMapper;
@@ -243,10 +242,8 @@ impl WebsiteMirror {
         let run_logger = RunLogger::init(output_dir)?;
         let run_logger = Arc::new(run_logger);
 
-        // TODO: Phase 5 - Update RunLogger to work with PersistentState directly
-        // For now, we'll create a temporary mirror_state for compatibility
-        let mirror_state = MirrorState::new(output_dir)?;
-        run_logger.set_mirror_state(Arc::new(mirror_state));
+        // Set PersistentState for RunLogger
+        run_logger.set_persistent_state(Arc::clone(&state));
 
         Ok(Self {
             base_url: base_url.to_string(),
@@ -279,40 +276,14 @@ impl WebsiteMirror {
         Ok(client)
     }
 
-    /// Get statistics from the PersistentState
-    pub fn get_mirror_state_statistics(&self) -> crate::mirror_state::Statistics {
-        // TODO: Phase 5 - This entire method will be removed when RunLogger uses PersistentState directly
-        let stats = self.state.get_statistics();
-
-        // Convert HashMap to DownloadStats structure (temporary compatibility layer)
-        let mut download_stats = crate::mirror_state::DownloadStats::default();
-        for (resource_type, count) in stats.downloads {
-            let resource_stats = crate::mirror_state::ResourceStats {
-                success: count,
-                error: 0,
-                bytes: 0,  // TODO: Phase 5 - Track bytes per resource type in PersistentState
-            };
-            match resource_type.as_str() {
-                "html" | "link" => download_stats.html = resource_stats,
-                "css" => download_stats.css = resource_stats,
-                "javascript" | "js" => download_stats.js = resource_stats,
-                "image" => download_stats.images = resource_stats,
-                _ => download_stats.other = resource_stats,
-            }
-        }
-
-        crate::mirror_state::Statistics {
-            urls_discovered: stats.urls_discovered,
-            downloads: download_stats,
-            total_bytes: stats.total_bytes,
-            last_updated: chrono::Local::now().to_rfc3339(),
-        }
+    /// Get statistics from PersistentState
+    pub fn get_statistics(&self) -> crate::persistent_state::Statistics {
+        self.state.get_statistics()
     }
 
-    /// Get a reference to the MirrorState for sharing
-    pub fn get_mirror_state(&self) -> Arc<MirrorState> {
-        // TODO: Phase 5 - Remove this method entirely
-        Arc::new(MirrorState::new(&self.output_dir).unwrap())
+    /// Get a reference to the PersistentState
+    pub fn get_state(&self) -> &Arc<PersistentState> {
+        &self.state
     }
 
     /// Get a reference to the RunLogger for summary writing
@@ -367,8 +338,6 @@ impl WebsiteMirror {
                 let client = self.client.clone();
                 let file_manager = self.file_manager.clone();
                 let state = self.state.clone();
-                // TODO: Phase 5 - Remove MirrorState dependency completely
-                let mirror_state = MirrorState::new(&self.output_dir).unwrap();
 
                 progress_bar.set_message(format!("Downloading: {}", url));
 
@@ -382,7 +351,6 @@ impl WebsiteMirror {
                     &url,
                     depth,
                     &state,
-                    &mirror_state,
                     &base_url,
                     priority,
                     resource_type,
@@ -440,7 +408,6 @@ impl WebsiteMirror {
         url: &str,
         depth: usize,
         state: &Arc<PersistentState>,
-        mirror_state: &MirrorState,
         base_url: &str,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
@@ -459,11 +426,6 @@ impl WebsiteMirror {
             Ok(resp) => resp,
             Err(e) => {
                 log::error!("❌ Request failed: {}", e);
-                mirror_state.track_download_error(
-                    url.to_string(),
-                    ResourceType::Link,
-                    &format!("Request failed: {}", e),
-                )?;
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -612,7 +574,6 @@ impl WebsiteMirror {
                 &resource.resolved,
                 &resource.resource_type,
                 state,
-                mirror_state,
                 convert_to_webp,
                 run_logger,
             )
@@ -700,7 +661,6 @@ impl WebsiteMirror {
                 &resource.resolved,
                 &resource.resource_type,
                 state,
-                mirror_state,
                 convert_to_webp,
                 run_logger,
             )
@@ -750,12 +710,6 @@ impl WebsiteMirror {
 
         // Track successful HTML download
         let size_bytes = html_content_updated.len() as u64;
-        mirror_state.track_download_success(
-            url.to_string(),
-            local_html_path.to_string_lossy().to_string(),
-            ResourceType::Link,
-            size_bytes,
-        )?;
 
         // Track downloaded in run logger
         if let Some(ref logger) = run_logger {
@@ -778,7 +732,6 @@ impl WebsiteMirror {
         file_manager: &FileManager,
         url: &str,
         state: &Arc<PersistentState>,
-        mirror_state: &MirrorState,
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<ProcessResult> {
@@ -799,11 +752,6 @@ impl WebsiteMirror {
             Ok(resp) => resp,
             Err(e) => {
                 log::error!("❌ Request failed: {}", e);
-                mirror_state.track_download_error(
-                    url.to_string(),
-                    ResourceType::CSS,
-                    &format!("Request failed: {}", e),
-                )?;
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -870,7 +818,6 @@ impl WebsiteMirror {
                 &resource.resolved,
                 &ResourceType::Image,
                 state,
-                mirror_state,
                 convert_to_webp,
                 run_logger,
             )
@@ -893,12 +840,6 @@ impl WebsiteMirror {
 
         // Track successful CSS download
         let size_bytes = content.len() as u64;
-        mirror_state.track_download_success(
-            url.to_string(),
-            local_path.to_string_lossy().to_string(),
-            ResourceType::CSS,
-            size_bytes,
-        )?;
 
         // Track downloaded in run logger
         if let Some(ref logger) = run_logger {
@@ -922,7 +863,6 @@ impl WebsiteMirror {
         url: &str,
         depth: usize,
         state: &Arc<PersistentState>,
-        mirror_state: &MirrorState,
         base_url: &str,
         priority: DownloadPriority,
         resource_type: Option<ResourceType>,
@@ -951,7 +891,6 @@ impl WebsiteMirror {
                     url,
                     depth,
                     state,
-                    mirror_state,
                     base_url,
                     only_resources,
                     convert_to_webp,
@@ -966,7 +905,6 @@ impl WebsiteMirror {
                     file_manager,
                     url,
                     state,
-                    mirror_state,
                     convert_to_webp,
                     run_logger,
                 )
@@ -983,7 +921,6 @@ impl WebsiteMirror {
                     url,
                     &resource_type,
                     state,
-                    mirror_state,
                     convert_to_webp,
                     run_logger,
                 )
@@ -1001,21 +938,9 @@ impl WebsiteMirror {
         url: &str,
         resource_type: &ResourceType,
         state: &Arc<PersistentState>,
-        mirror_state: &MirrorState,
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<ProcessResult> {
-        // Check if already downloaded using cache
-        if let Some(cached_path) = mirror_state.get_path(url) {
-            log::debug!(
-                "⏭️  Skipping {} (already downloaded to {})",
-                url,
-                cached_path
-            );
-            // Track as skipped in run logger
-            return Ok(ProcessResult::SkippedAlreadyExists);
-        }
-
         // Check if resource already downloaded using persistent state
         if state.is_visited(url) {
             log::debug!("⏭️  Skipping resource (already processed): {}", url);
@@ -1059,11 +984,6 @@ impl WebsiteMirror {
                     url,
                     e
                 );
-                mirror_state.track_download_error(
-                    url.to_string(),
-                    resource_type.clone(),
-                    &format!("Request failed: {}", e),
-                )?;
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -1162,12 +1082,6 @@ impl WebsiteMirror {
 
         // Track successful download
         let size_bytes = final_content.len() as u64;
-        mirror_state.track_download_success(
-            url.to_string(),
-            local_path.to_string_lossy().to_string(),
-            resource_type.clone(),
-            size_bytes,
-        )?;
 
         // Track downloaded in run logger
         if let Some(ref logger) = run_logger {
