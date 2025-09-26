@@ -464,6 +464,12 @@ impl WebsiteMirror {
                     ResourceType::Link,
                     &format!("Request failed: {}", e),
                 )?;
+                // Mark errored in persistent state
+                state.mark_errored(
+                    url.to_string(),
+                    format!("Request failed: {}", e),
+                    ResourceType::Link,
+                );
                 // Track error in run logger
                 if let Some(ref logger) = run_logger {
                     logger.track_error();
@@ -474,6 +480,12 @@ impl WebsiteMirror {
 
         if response.status() != StatusCode::OK {
             log::warn!("⚠️  HTTP {} for {}", response.status(), url);
+            // Mark errored in persistent state
+            state.mark_errored(
+                url.to_string(),
+                format!("HTTP {} for {}", response.status(), url),
+                ResourceType::Link,
+            );
             return Ok(ProcessResult::Error(format!(
                 "HTTP {} for {}",
                 response.status(),
@@ -485,6 +497,12 @@ impl WebsiteMirror {
             Ok(bytes) => bytes,
             Err(e) => {
                 log::error!("❌ Failed to read response body: {}", e);
+                // Mark errored in persistent state
+                state.mark_errored(
+                    url.to_string(),
+                    format!("Failed to read response body: {}", e),
+                    ResourceType::Link,
+                );
                 return Ok(ProcessResult::Error(format!(
                     "Failed to read response body: {}",
                     e
@@ -593,6 +611,7 @@ impl WebsiteMirror {
                 &url_mapper,
                 &resource.resolved,
                 &resource.resource_type,
+                state,
                 mirror_state,
                 convert_to_webp,
                 run_logger,
@@ -680,6 +699,7 @@ impl WebsiteMirror {
                 &url_mapper,
                 &resource.resolved,
                 &resource.resource_type,
+                state,
                 mirror_state,
                 convert_to_webp,
                 run_logger,
@@ -742,6 +762,14 @@ impl WebsiteMirror {
             logger.track_downloaded(size_bytes);
         }
 
+        // Mark completed in persistent state
+        state.mark_completed(
+            url.to_string(),
+            local_html_path.to_string_lossy().to_string(),
+            ResourceType::Link,
+            size_bytes,
+        );
+
         Ok(ProcessResult::Downloaded)
     }
 
@@ -749,22 +777,16 @@ impl WebsiteMirror {
         client: &Client,
         file_manager: &FileManager,
         url: &str,
+        state: &Arc<PersistentState>,
         mirror_state: &MirrorState,
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
     ) -> Result<ProcessResult> {
         log::debug!("🎨 Processing CSS file: {}", url);
 
-        // Check if CSS already exists on disk
-        let url_mapper = UrlMapper::new(convert_to_webp)?;
-        let local_path = url_mapper.url_to_local_path(url, &ResourceType::CSS)?;
-
-        if file_manager.file_exists(&local_path) {
-            // File already exists, should already be in the manifest from previous run
-            log::debug!(
-                "⏭️  Skipping CSS (already exists on disk at {})",
-                local_path.display()
-            );
+        // Check if CSS already downloaded using persistent state
+        if state.is_visited(url) {
+            log::debug!("⏭️  Skipping CSS (already processed): {}", url);
             // Track as skipped in run logger
             if let Some(ref logger) = run_logger {
                 logger.track_skipped();
@@ -782,6 +804,12 @@ impl WebsiteMirror {
                     ResourceType::CSS,
                     &format!("Request failed: {}", e),
                 )?;
+                // Mark errored in persistent state
+                state.mark_errored(
+                    url.to_string(),
+                    format!("Request failed: {}", e),
+                    ResourceType::CSS,
+                );
                 // Track error in run logger
                 if let Some(ref logger) = run_logger {
                     logger.track_error();
@@ -792,6 +820,12 @@ impl WebsiteMirror {
 
         if response.status() != StatusCode::OK {
             log::warn!("⚠️  HTTP {} for {}", response.status(), url);
+            // Mark errored in persistent state
+            state.mark_errored(
+                url.to_string(),
+                format!("HTTP {} for {}", response.status(), url),
+                ResourceType::CSS,
+            );
             return Ok(ProcessResult::Error(format!(
                 "HTTP {} for {}",
                 response.status(),
@@ -803,6 +837,12 @@ impl WebsiteMirror {
             Ok(bytes) => bytes,
             Err(e) => {
                 log::error!("❌ Failed to read response body: {}", e);
+                // Mark errored in persistent state
+                state.mark_errored(
+                    url.to_string(),
+                    format!("Failed to read response body: {}", e),
+                    ResourceType::CSS,
+                );
                 return Ok(ProcessResult::Error(format!(
                     "Failed to read response body: {}",
                     e
@@ -829,6 +869,7 @@ impl WebsiteMirror {
                 &url_mapper,
                 &resource.resolved,
                 &ResourceType::Image,
+                state,
                 mirror_state,
                 convert_to_webp,
                 run_logger,
@@ -863,6 +904,14 @@ impl WebsiteMirror {
         if let Some(ref logger) = run_logger {
             logger.track_downloaded(size_bytes);
         }
+
+        // Mark completed in persistent state
+        state.mark_completed(
+            url.to_string(),
+            local_path.to_string_lossy().to_string(),
+            ResourceType::CSS,
+            size_bytes,
+        );
 
         Ok(ProcessResult::Downloaded)
     }
@@ -916,6 +965,7 @@ impl WebsiteMirror {
                     client,
                     file_manager,
                     url,
+                    state,
                     mirror_state,
                     convert_to_webp,
                     run_logger,
@@ -932,6 +982,7 @@ impl WebsiteMirror {
                     &url_mapper,
                     url,
                     &resource_type,
+                    state,
                     mirror_state,
                     convert_to_webp,
                     run_logger,
@@ -949,6 +1000,7 @@ impl WebsiteMirror {
         url_mapper: &UrlMapper,
         url: &str,
         resource_type: &ResourceType,
+        state: &Arc<PersistentState>,
         mirror_state: &MirrorState,
         convert_to_webp: bool,
         run_logger: &Option<Arc<RunLogger>>,
@@ -964,22 +1016,18 @@ impl WebsiteMirror {
             return Ok(ProcessResult::SkippedAlreadyExists);
         }
 
-        // Check if file exists on disk
-        // First convert URL to the local path where it would be saved
-        let local_path = url_mapper.url_to_local_path(url, resource_type)?;
-        if file_manager.file_exists(&local_path) {
-            // File already exists, should already be in the manifest from previous run
-            log::debug!(
-                "⏭️  Skipping {} (already exists on disk at {})",
-                url,
-                local_path.display()
-            );
+        // Check if resource already downloaded using persistent state
+        if state.is_visited(url) {
+            log::debug!("⏭️  Skipping resource (already processed): {}", url);
             // Track as skipped in run logger
             if let Some(ref logger) = run_logger {
                 logger.track_skipped();
             }
             return Ok(ProcessResult::SkippedAlreadyExists);
         }
+
+        // Get local path for saving
+        let local_path = url_mapper.url_to_local_path(url, resource_type)?;
 
         // Determine resource type string for better logging
         let resource_type_str = match resource_type {
@@ -1016,6 +1064,12 @@ impl WebsiteMirror {
                     resource_type.clone(),
                     &format!("Request failed: {}", e),
                 )?;
+                // Mark errored in persistent state
+                state.mark_errored(
+                    url.to_string(),
+                    format!("Request failed: {}", e),
+                    resource_type.clone(),
+                );
                 // Track error in run logger
                 if let Some(ref logger) = run_logger {
                     logger.track_error();
@@ -1030,6 +1084,12 @@ impl WebsiteMirror {
                 response.status(),
                 resource_type_str,
                 url
+            );
+            // Mark errored in persistent state
+            state.mark_errored(
+                url.to_string(),
+                format!("HTTP {} for {}", response.status(), url),
+                resource_type.clone(),
             );
             return Ok(ProcessResult::Error(format!(
                 "HTTP {} for {}",
@@ -1053,6 +1113,12 @@ impl WebsiteMirror {
                     resource_type_str,
                     url,
                     e
+                );
+                // Mark errored in persistent state
+                state.mark_errored(
+                    url.to_string(),
+                    format!("Failed to read response body: {}", e),
+                    resource_type.clone(),
                 );
                 return Ok(ProcessResult::Error(format!(
                     "Failed to read response body: {}",
@@ -1084,6 +1150,12 @@ impl WebsiteMirror {
             Ok(path) => path,
             Err(e) => {
                 log::error!("❌ Failed to save {} {}: {}", resource_type_str, url, e);
+                // Mark errored in persistent state
+                state.mark_errored(
+                    url.to_string(),
+                    format!("Failed to save file: {}", e),
+                    resource_type.clone(),
+                );
                 return Ok(ProcessResult::Error(format!("Failed to save file: {}", e)));
             }
         };
@@ -1101,6 +1173,14 @@ impl WebsiteMirror {
         if let Some(ref logger) = run_logger {
             logger.track_downloaded(size_bytes);
         }
+
+        // Mark completed in persistent state
+        state.mark_completed(
+            url.to_string(),
+            local_path.to_string_lossy().to_string(),
+            resource_type.clone(),
+            size_bytes,
+        );
 
         log::info!(
             "✅ Downloaded {} to: {}",
