@@ -14,12 +14,11 @@ use crate::url_mapper::UrlMapper;
 #[derive(Debug, Clone, Default)]
 pub struct Statistics {
     pub urls_discovered: usize,
-    pub downloads: HashMap<String, usize>,     // resource_type -> success count
-    pub errors: HashMap<String, usize>,        // resource_type -> error count
-    pub bytes_per_type: HashMap<String, u64>,  // resource_type -> total bytes
+    pub downloads: HashMap<String, usize>, // resource_type -> success count
+    pub errors: HashMap<String, usize>,    // resource_type -> error count
+    pub bytes_per_type: HashMap<String, u64>, // resource_type -> total bytes
     pub total_bytes: u64,
 }
-
 
 /// Core state data that gets persisted to disk
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -88,17 +87,14 @@ impl PersistentState {
                 // Note: We lose the original depth/resource_type, but that's acceptable
                 loaded.queue.push_front(DownloadTask {
                     url: url.clone(),
-                    depth: 0,  // Conservative depth to prevent deep recursion
+                    depth: 0, // Conservative depth to prevent deep recursion
                     priority: DownloadPriority::High,
                     resource_type: None,
                 });
             }
 
             if processing_count > 0 {
-                log::info!(
-                    "Recovered {} interrupted downloads",
-                    processing_count
-                );
+                log::info!("Recovered {} interrupted downloads", processing_count);
             }
 
             log::info!(
@@ -146,8 +142,8 @@ impl PersistentState {
         let normalized_url = UrlMapper::normalize_root_url(&task.url);
         data.processing.insert(normalized_url);
 
-        drop(data);  // Release lock before I/O
-        self.save().ok();  // Best effort save
+        drop(data); // Release lock before I/O
+        self.save().ok(); // Best effort save
         Some(task)
     }
 
@@ -159,7 +155,9 @@ impl PersistentState {
         let normalized_url = UrlMapper::normalize_root_url(&task.url);
 
         // Check if already visited (downloaded or errored) - no separate visited set!
-        if data.downloaded.contains_key(&normalized_url) || data.errored.contains_key(&normalized_url) {
+        if data.downloaded.contains_key(&normalized_url)
+            || data.errored.contains_key(&normalized_url)
+        {
             return;
         }
 
@@ -167,13 +165,17 @@ impl PersistentState {
         if data.processing.contains(&normalized_url) {
             return;
         }
-        if data.queue.iter().any(|t| UrlMapper::normalize_root_url(&t.url) == normalized_url) {
+        if data
+            .queue
+            .iter()
+            .any(|t| UrlMapper::normalize_root_url(&t.url) == normalized_url)
+        {
             return;
         }
 
         // Insert based on priority (this replaces BinaryHeap's automatic ordering)
         let insert_pos = match task.priority {
-            DownloadPriority::Critical => 0,  // Front of queue
+            DownloadPriority::Critical => 0, // Front of queue
             DownloadPriority::High => {
                 // After all critical items
                 data.queue
@@ -181,7 +183,7 @@ impl PersistentState {
                     .position(|t| !matches!(t.priority, DownloadPriority::Critical))
                     .unwrap_or(data.queue.len())
             }
-            DownloadPriority::Normal => data.queue.len(),  // Back of queue
+            DownloadPriority::Normal => data.queue.len(), // Back of queue
         };
 
         data.queue.insert(insert_pos, task);
@@ -203,7 +205,10 @@ impl PersistentState {
         let normalized_url = UrlMapper::normalize_root_url(&url);
 
         // Track this URL as downloaded in current run
-        self.current_run_downloads.lock().unwrap().insert(normalized_url.clone());
+        self.current_run_downloads
+            .lock()
+            .unwrap()
+            .insert(normalized_url.clone());
 
         // ATOMIC: Move from processing to downloaded
         data.processing.remove(&normalized_url);
@@ -321,7 +326,10 @@ impl PersistentState {
         }
 
         Statistics {
-            urls_discovered: data.downloaded.len() + data.errored.len() + data.queue.len() + data.processing.len(),
+            urls_discovered: data.downloaded.len()
+                + data.errored.len()
+                + data.queue.len()
+                + data.processing.len(),
             downloads,
             errors,
             bytes_per_type,
@@ -332,15 +340,19 @@ impl PersistentState {
     /// Get error messages for summary reporting
     pub fn get_error_messages(&self) -> Vec<String> {
         let data = self.data.lock().unwrap();
-        data.errored.values().map(|err| err.error_message.clone()).collect()
+        data.errored
+            .values()
+            .map(|err| err.error_message.clone())
+            .collect()
     }
-
 
     /// Checks if a URL is already in the queue
     pub fn is_queued(&self, url: &str) -> bool {
         let data = self.data.lock().unwrap();
         let normalized_url = UrlMapper::normalize_root_url(url);
-        data.queue.iter().any(|t| UrlMapper::normalize_root_url(&t.url) == normalized_url)
+        data.queue
+            .iter()
+            .any(|t| UrlMapper::normalize_root_url(&t.url) == normalized_url)
     }
 
     /// Checks if a URL is currently being processed
@@ -354,7 +366,9 @@ impl PersistentState {
     pub fn get_local_path(&self, url: &str) -> Option<String> {
         let data = self.data.lock().unwrap();
         let normalized_url = UrlMapper::normalize_root_url(url);
-        data.downloaded.get(&normalized_url).map(|info| info.local_path.clone())
+        data.downloaded
+            .get(&normalized_url)
+            .map(|info| info.local_path.clone())
     }
 
     /// Gets total count of URLs that have been seen/discovered
@@ -374,7 +388,10 @@ impl PersistentState {
     /// Checks if a URL was downloaded in the current run
     pub fn was_downloaded_this_run(&self, url: &str) -> bool {
         let normalized_url = UrlMapper::normalize_root_url(url);
-        self.current_run_downloads.lock().unwrap().contains(&normalized_url)
+        self.current_run_downloads
+            .lock()
+            .unwrap()
+            .contains(&normalized_url)
     }
 
     /// Checks if a URL should be tracked as skipped (i.e., was downloaded in a previous run)

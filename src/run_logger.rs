@@ -206,20 +206,29 @@ impl RunLogger {
     }
 
     /// Write summary at the end of the run - creates summary from PersistentState
-    pub fn write_summary(&self, start_time_str: String, duration_str: String, base_url: String) -> Result<()> {
+    pub fn write_summary(
+        &self,
+        start_time_str: String,
+        duration_str: String,
+        base_url: String,
+    ) -> Result<()> {
         // Create summary from persistent state
         let summary = if let Some(ref state) = *self.persistent_state.lock().unwrap() {
             let stats = state.get_statistics();
 
             // Extract data from the native statistics format
-            let pages_crawled = stats.downloads.get("html").copied().unwrap_or(0) +
-                               stats.downloads.get("link").copied().unwrap_or(0);
+            let pages_crawled = stats.downloads.get("html").copied().unwrap_or(0)
+                + stats.downloads.get("link").copied().unwrap_or(0);
             let css_files = stats.downloads.get("css").copied().unwrap_or(0);
-            let js_files = stats.downloads.get("js").copied().unwrap_or(0) +
-                           stats.downloads.get("javascript").copied().unwrap_or(0);
+            let js_files = stats.downloads.get("js").copied().unwrap_or(0)
+                + stats.downloads.get("javascript").copied().unwrap_or(0);
             let images = stats.downloads.get("image").copied().unwrap_or(0);
-            let other_files = stats.downloads.iter()
-                .filter(|(key, _)| !["html", "link", "css", "js", "javascript", "image"].contains(&key.as_str()))
+            let other_files = stats
+                .downloads
+                .iter()
+                .filter(|(key, _)| {
+                    !["html", "link", "css", "js", "javascript", "image"].contains(&key.as_str())
+                })
                 .map(|(_, count)| count)
                 .sum();
             let total_successful: usize = stats.downloads.values().sum();

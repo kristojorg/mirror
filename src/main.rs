@@ -1,6 +1,6 @@
 use anyhow::Result;
-use clap::Parser;
 use chrono::Local;
+use clap::Parser;
 use std::time::Instant;
 
 use website_mirror::{cli::MirrorCommand, downloader::WebsiteMirror};
@@ -36,6 +36,7 @@ async fn main() -> Result<()> {
         args.only_resources.clone(),
         args.convert_to_webp,
         args.no_proxy,
+        args.ignore_patterns.clone(),
     )?;
 
     // Perform the mirroring

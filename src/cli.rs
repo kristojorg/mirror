@@ -62,6 +62,11 @@ pub struct MirrorCommand {
     /// Disable the use of the proxy server
     #[arg(long)]
     pub no_proxy: bool,
+
+    /// Regex patterns to ignore URLs (pipe-separated: pattern1|pattern2)
+    /// Example: --ignore-patterns ".*/login.*|.*/faq.*"
+    #[arg(long, value_delimiter = '|')]
+    pub ignore_patterns: Option<Vec<String>>,
 }
 
 #[cfg(test)]

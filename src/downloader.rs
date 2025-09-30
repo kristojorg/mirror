@@ -1,4 +1,5 @@
 use anyhow::Result;
+use regex::Regex;
 use reqwest::{Client, ClientBuilder, StatusCode};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -53,7 +54,7 @@ impl Ord for DownloadPriority {
 
 // DownloadTask is now imported from persistent_state module
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WebsiteMirror {
     pub base_url: String,
     pub output_dir: PathBuf,
@@ -63,11 +64,34 @@ pub struct WebsiteMirror {
     pub download_external: bool,
     pub only_resources: Option<Vec<String>>,
     pub convert_to_webp: bool,
+    pub ignore_patterns: Option<Vec<Regex>>,
     client: Client,
     file_manager: FileManager,
     html_parser: HtmlParser,
     state: Arc<PersistentState>, // Unified persistent state management
     run_logger: Arc<RunLogger>,  // Runtime logger for tracking this run
+}
+
+impl std::fmt::Debug for WebsiteMirror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebsiteMirror")
+            .field("base_url", &self.base_url)
+            .field("output_dir", &self.output_dir)
+            .field("max_depth", &self.max_depth)
+            .field("max_concurrent", &self.max_concurrent)
+            .field("ignore_robots", &self.ignore_robots)
+            .field("download_external", &self.download_external)
+            .field("only_resources", &self.only_resources)
+            .field("convert_to_webp", &self.convert_to_webp)
+            .field(
+                "ignore_patterns",
+                &self
+                    .ignore_patterns
+                    .as_ref()
+                    .map(|p| format!("{} patterns", p.len())),
+            )
+            .finish()
+    }
 }
 
 impl WebsiteMirror {
@@ -181,6 +205,19 @@ impl WebsiteMirror {
         Ok(webp_data.to_vec())
     }
 
+    /// Check if a URL should be ignored based on ignore patterns
+    pub fn should_ignore_url(&self, url: &str) -> bool {
+        if let Some(ref patterns) = self.ignore_patterns {
+            for pattern in patterns {
+                if pattern.is_match(url) {
+                    log::debug!("Ignoring URL (matches pattern): {}", url);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Check if a resource type should be processed based on the only_resources filter
     pub fn should_process_resource_type(&self, resource_type: &ResourceType) -> bool {
         if let Some(ref only_resources) = self.only_resources {
@@ -208,10 +245,32 @@ impl WebsiteMirror {
         only_resources: Option<Vec<String>>,
         convert_to_webp: bool,
         no_proxy: bool,
+        ignore_patterns: Option<Vec<String>>,
     ) -> Result<Self> {
         let client = Self::build_http_client(no_proxy)?;
         let file_manager = FileManager::new(output_dir)?;
         let html_parser = HtmlParser::new(base_url)?;
+
+        // Compile ignore patterns into regex
+        let compiled_patterns = if let Some(patterns) = ignore_patterns {
+            let mut compiled = Vec::new();
+            for pattern in patterns {
+                match Regex::new(&pattern) {
+                    Ok(regex) => compiled.push(regex),
+                    Err(e) => {
+                        log::warn!("Invalid regex pattern '{}': {}", pattern, e);
+                        return Err(anyhow::anyhow!(
+                            "Invalid regex pattern '{}': {}",
+                            pattern,
+                            e
+                        ));
+                    }
+                }
+            }
+            Some(compiled)
+        } else {
+            None
+        };
 
         // Create persistent state (automatically loads existing state or creates new)
         let state = Arc::new(PersistentState::new(output_dir)?);
@@ -235,6 +294,7 @@ impl WebsiteMirror {
             download_external,
             only_resources,
             convert_to_webp,
+            ignore_patterns: compiled_patterns,
             client,
             file_manager,
             html_parser,
@@ -251,7 +311,9 @@ impl WebsiteMirror {
             .timeout(std::time::Duration::from_secs(480));
 
         if !no_proxy {
-            let proxy = reqwest::Proxy::all("https://user-spxihizegc:wk0c88X0N~nRibgUxm@gate.decodo.com:7000")?;
+            let proxy = reqwest::Proxy::all(
+                "https://user-spxihizegc:wk0c88X0N~nRibgUxm@gate.decodo.com:7000",
+            )?;
             builder = builder.proxy(proxy);
         }
 
@@ -286,13 +348,19 @@ impl WebsiteMirror {
 
         // Add the base URL to the download queue with high priority (HTML page)
         // Only add HTML pages if we're not filtering to specific resource types
+        // and if the base URL doesn't match any ignore patterns
         if self.only_resources.is_none() || self.should_process_resource_type(&ResourceType::Link) {
-            self.state.enqueue(DownloadTask {
-                url: self.base_url.clone(),
-                depth: 0,
-                priority: DownloadPriority::High,
-                resource_type: None,
-            });
+            // Check if base URL should be ignored
+            if !self.should_ignore_url(&self.base_url) {
+                self.state.enqueue(DownloadTask {
+                    url: self.base_url.clone(),
+                    depth: 0,
+                    priority: DownloadPriority::High,
+                    resource_type: None,
+                });
+            } else {
+                log::info!("Base URL matches ignore pattern - skipping");
+            }
         } else {
             log::info!("Resource filter active - skipping HTML page crawling");
         }
@@ -317,6 +385,7 @@ impl WebsiteMirror {
                 let state = self.state.clone();
                 let base_url = self.base_url.clone();
                 let run_logger = self.run_logger.clone();
+                let ignore_patterns = self.ignore_patterns.clone();
 
                 // Process the download directly instead of spawning a task
                 match Self::download_and_process_url(
@@ -331,6 +400,7 @@ impl WebsiteMirror {
                     &self.only_resources,
                     self.convert_to_webp,
                     &run_logger,
+                    &ignore_patterns,
                 )
                 .await
                 {
@@ -384,6 +454,7 @@ impl WebsiteMirror {
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
+        ignore_patterns: &Option<Vec<Regex>>,
     ) -> Result<ProcessResult> {
         log::debug!("📄 Processing HTML page: {}", url);
 
@@ -548,6 +619,21 @@ impl WebsiteMirror {
 
         // Process HTML links - add to mappings AND queue for crawling
         for resource in &high_resources {
+            // Skip if URL matches ignore pattern
+            if let Some(ref patterns) = ignore_patterns {
+                let mut should_skip = false;
+                for pattern in patterns {
+                    if pattern.is_match(&resource.resolved) {
+                        log::debug!("Ignoring URL (matches pattern): {}", resource.resolved);
+                        should_skip = true;
+                        break;
+                    }
+                }
+                if should_skip {
+                    continue;
+                }
+            }
+
             // First, add to url_mappings so links get rewritten
             if resource.resolved.starts_with(base_url) {
                 if let Ok(local_path) =
@@ -772,6 +858,7 @@ impl WebsiteMirror {
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
+        ignore_patterns: &Option<Vec<Regex>>,
     ) -> Result<ProcessResult> {
         // PersistentState already handles deduplication via dequeue
         // The URL is already moved to processing when dequeued
@@ -798,6 +885,7 @@ impl WebsiteMirror {
                     only_resources,
                     convert_to_webp,
                     run_logger,
+                    ignore_patterns,
                 )
                 .await
             }
@@ -1006,6 +1094,7 @@ mod tests {
             None,
             false,
             true, // no_proxy
+            None, // ignore_patterns
         )
         .unwrap();
 
@@ -1030,6 +1119,7 @@ mod tests {
             Some(vec!["images".to_string()]),
             true,
             false, // no_proxy
+            None,  // ignore_patterns
         )
         .unwrap();
 
@@ -1054,6 +1144,7 @@ mod tests {
             None,
             false,
             true, // no_proxy
+            None, // ignore_patterns
         )
         .unwrap();
 
@@ -1074,6 +1165,7 @@ mod tests {
             Some(vec!["images".to_string(), "css".to_string()]),
             false,
             true, // no_proxy
+            None, // ignore_patterns
         )
         .unwrap();
 
@@ -1219,6 +1311,7 @@ mod tests {
             None,
             false,
             true, // no_proxy
+            None, // ignore_patterns
         )
         .unwrap();
 
@@ -1240,6 +1333,7 @@ mod tests {
             None,
             false,
             true, // no_proxy
+            None, // ignore_patterns
         )
         .unwrap();
 

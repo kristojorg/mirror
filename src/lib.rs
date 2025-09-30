@@ -10,8 +10,8 @@ pub mod url_mapper;
 // Re-export main types for convenience
 pub use cli::MirrorCommand;
 pub use downloader::{DownloadPriority, WebsiteMirror};
-pub use persistent_state::DownloadTask;
 pub use file_manager::FileManager;
 pub use html_parser::{HtmlParser, ResourceLink, ResourceType};
 pub use html_rewriter::HtmlRewriter;
+pub use persistent_state::DownloadTask;
 pub use url_mapper::UrlMapper;

@@ -3,7 +3,6 @@ use select::document::Document;
 use select::predicate::{Attr, Name};
 use url::Url;
 
-
 /// Represents a resource found in HTML content
 #[derive(Debug, Clone)]
 pub struct ResourceLink {
@@ -37,10 +36,7 @@ impl HtmlParser {
     }
 
     /// Extract all resources from HTML content
-    pub fn extract_resources(
-        &self,
-        html_content: &str,
-    ) -> Result<Vec<ResourceLink>> {
+    pub fn extract_resources(&self, html_content: &str) -> Result<Vec<ResourceLink>> {
         let document = Document::from(html_content);
         let mut resources = Vec::new();
 
@@ -49,9 +45,7 @@ impl HtmlParser {
             if let Some(href) = link.attr("href") {
                 if let Some(rel) = link.attr("rel") {
                     if rel.contains("stylesheet") {
-                        if let Ok(resource) =
-                            self.create_resource_link(href, ResourceType::CSS)
-                        {
+                        if let Ok(resource) = self.create_resource_link(href, ResourceType::CSS) {
                             resources.push(resource);
                         }
                     }
@@ -62,9 +56,7 @@ impl HtmlParser {
         // Extract JavaScript files
         for script in document.find(Name("script")) {
             if let Some(src) = script.attr("src") {
-                if let Ok(resource) =
-                    self.create_resource_link(src, ResourceType::JavaScript)
-                {
+                if let Ok(resource) = self.create_resource_link(src, ResourceType::JavaScript) {
                     resources.push(resource);
                 }
             }
@@ -73,9 +65,7 @@ impl HtmlParser {
         // Extract images
         for img in document.find(Name("img")) {
             if let Some(src) = img.attr("src") {
-                if let Ok(resource) =
-                    self.create_resource_link(src, ResourceType::Image)
-                {
+                if let Ok(resource) = self.create_resource_link(src, ResourceType::Image) {
                     resources.push(resource);
                 }
             }
@@ -91,9 +81,7 @@ impl HtmlParser {
         // Extract links
         for link in document.find(Name("a")) {
             if let Some(href) = link.attr("href") {
-                if let Ok(resource) =
-                    self.create_resource_link(href, ResourceType::Link)
-                {
+                if let Ok(resource) = self.create_resource_link(href, ResourceType::Link) {
                     resources.push(resource);
                 }
             }
@@ -103,11 +91,7 @@ impl HtmlParser {
     }
 
     /// Create a resource link with resolved URL
-    fn create_resource_link(
-        &self,
-        url: &str,
-        resource_type: ResourceType,
-    ) -> Result<ResourceLink> {
+    fn create_resource_link(&self, url: &str, resource_type: ResourceType) -> Result<ResourceLink> {
         // Skip data URLs and other special schemes
         if url.starts_with("data:")
             || url.starts_with("javascript:")
@@ -231,10 +215,7 @@ mod tests {
             .find(|r| r.resource_type == ResourceType::JavaScript)
             .unwrap();
         assert_eq!(js_resource.original_url, "/static/script.js");
-        assert_eq!(
-            js_resource.resolved,
-            "https://example.com/static/script.js"
-        );
+        assert_eq!(js_resource.resolved, "https://example.com/static/script.js");
 
         let img_resource = resources
             .iter()
@@ -281,10 +262,7 @@ mod tests {
             css_resource.original_url,
             "https://cdn.example.com/style.css"
         );
-        assert_eq!(
-            css_resource.resolved,
-            "https://cdn.example.com/style.css"
-        );
+        assert_eq!(css_resource.resolved, "https://cdn.example.com/style.css");
     }
 
     #[test]
@@ -422,7 +400,6 @@ mod tests {
 
         assert_eq!(resources.len(), 0);
     }
-
 
     #[test]
     fn test_resource_link_clone() {
