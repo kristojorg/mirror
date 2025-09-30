@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::downloader::DownloadPriority;
 use crate::html_parser::ResourceType;
+use crate::run_logger::RunLogger;
 use crate::url_mapper::UrlMapper;
 
 /// Statistics computed from the state data
@@ -62,6 +63,8 @@ pub struct PersistentState {
     cache_file: PathBuf,
     // Track URLs downloaded in current run (not persisted, in-memory only)
     current_run_downloads: Arc<Mutex<HashSet<String>>>,
+    // Optional run logger for tracking current run stats
+    run_logger: Arc<Mutex<Option<Arc<RunLogger>>>>,
 }
 
 impl PersistentState {
@@ -112,6 +115,7 @@ impl PersistentState {
             data: Arc::new(Mutex::new(data)),
             cache_file,
             current_run_downloads: Arc::new(Mutex::new(HashSet::new())),
+            run_logger: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -231,6 +235,12 @@ impl PersistentState {
             },
         );
         drop(data);
+
+        // Track error in run logger if available
+        if let Some(ref logger) = *self.run_logger.lock().unwrap() {
+            logger.track_error();
+        }
+
         self.save().ok();
     }
 
@@ -367,5 +377,11 @@ impl PersistentState {
     /// Checks if a URL should be tracked as skipped (i.e., was downloaded in a previous run)
     pub fn should_track_as_skipped(&self, url: &str) -> bool {
         self.is_visited(url) && !self.was_downloaded_this_run(url)
+    }
+
+    /// Set the run logger for tracking current run statistics
+    pub fn set_run_logger(&self, logger: Arc<RunLogger>) {
+        let mut run_logger = self.run_logger.lock().unwrap();
+        *run_logger = Some(logger);
     }
 }
