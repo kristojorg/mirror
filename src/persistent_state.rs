@@ -91,20 +91,20 @@ impl PersistentState {
 
             if processing_count > 0 {
                 log::info!(
-                    "Recovered {} in-progress URLs and added them back to the queue",
+                    "Recovered {} interrupted downloads",
                     processing_count
                 );
             }
 
             log::info!(
-                "Resumed crawl with {} queued URLs, {} downloaded, {} errors",
+                "Resuming crawl: {} queued, {} downloaded, {} errors",
                 loaded.queue.len(),
                 loaded.downloaded.len(),
                 loaded.errored.len()
             );
             loaded
         } else {
-            log::info!("Starting new crawl - no existing state found");
+            log::info!("Starting new crawl");
             StateData::default()
         };
 

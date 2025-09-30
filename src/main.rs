@@ -55,9 +55,9 @@ async fn main() -> Result<()> {
 
     // Log final status
     if result.is_ok() {
-        log::info!("✅ Website mirroring completed successfully!");
+        log::info!("Mirror completed successfully");
     } else {
-        log::error!("❌ Website mirroring completed with errors: {:?}", result);
+        log::error!("Mirror completed with errors: {:?}", result);
     }
 
     result

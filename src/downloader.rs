@@ -1,5 +1,4 @@
 use anyhow::Result;
-use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use reqwest::{Client, ClientBuilder, StatusCode};
@@ -113,18 +112,7 @@ impl WebsiteMirror {
         ];
 
         for (old_ext, new_ext) in simple_replacements {
-            let before_count = updated_content.matches(old_ext).count();
             updated_content = updated_content.replace(old_ext, new_ext);
-            let after_count = updated_content.matches(new_ext).count();
-
-            if before_count > 0 {
-                log::info!(
-                    "🔍 Simple WebP replacement: {} -> {} ({} replacements)",
-                    old_ext,
-                    new_ext,
-                    after_count,
-                );
-            }
         }
 
         // Pass 3: Restore the original .webp files
@@ -152,18 +140,7 @@ impl WebsiteMirror {
 
         for (pattern, replacement) in patterns {
             let regex = regex::Regex::new(pattern).unwrap();
-            let before_count = regex.find_iter(&updated_content).count();
             updated_content = regex.replace_all(&updated_content, replacement).to_string();
-            let after_count = regex.find_iter(&updated_content).count();
-
-            if before_count > 0 {
-                log::info!(
-                    "🔍 Regex WebP replacement: {} -> {} ({} replacements)",
-                    pattern,
-                    replacement,
-                    after_count
-                );
-            }
         }
 
         updated_content
@@ -175,7 +152,7 @@ impl WebsiteMirror {
         let img = match image::load_from_memory(image_data) {
             Ok(img) => img,
             Err(e) => {
-                log::error!("⚠️  Failed to decode image {}: {}", original_url, e);
+                log::warn!("Failed to decode image for WebP conversion: {} - {}", original_url, e);
                 return Ok(image_data.to_vec()); // Return original data if conversion fails
             }
         };
@@ -194,10 +171,8 @@ impl WebsiteMirror {
         let compression_ratio = (original_size as f64 / webp_size as f64 * 100.0) as u32;
 
         log::info!(
-            "🔄 Converted {} to WebP: {} -> {} bytes ({}% of original size)",
+            "Converted to WebP: {} ({}% of original)",
             original_url,
-            original_size,
-            webp_size,
             compression_ratio
         );
 
@@ -292,13 +267,9 @@ impl WebsiteMirror {
     }
 
     pub async fn mirror_website(&mut self) -> Result<()> {
-        log::info!(
-            "🚀 Starting website mirroring for: {}",
-            self.base_url.blue()
-        );
-        log::info!("📁 Output directory: {:?}", self.output_dir);
-        log::info!("🔗 Max depth: {}", self.max_depth);
-        log::info!("⚡ Max concurrent downloads: {}", self.max_concurrent);
+        log::info!("Starting mirror: {}", self.base_url);
+        log::info!("Output: {:?}", self.output_dir);
+        log::info!("Max depth: {} | Max concurrent: {}", self.max_depth, self.max_concurrent);
 
         // Add the base URL to the download queue with high priority (HTML page)
         // Only add HTML pages if we're not filtering to specific resource types
@@ -310,7 +281,7 @@ impl WebsiteMirror {
                 resource_type: None,
             });
         } else {
-            log::info!("🔍 Resource filter active: skipping HTML page crawling");
+            log::info!("Resource filter active - skipping HTML page crawling");
         }
 
         let progress_bar = ProgressBar::new_spinner();
@@ -361,22 +332,22 @@ impl WebsiteMirror {
                 .await
                 {
                     Ok(ProcessResult::Downloaded) => {
-                        log::info!("✅ Downloaded: {}", url);
+                        // Success logged in download_resource
                     }
                     Ok(ProcessResult::SkippedAlreadyExists) => {
-                        log::debug!("⏭️  Already exists: {}", url);
+                        // Already logged
                     }
                     Ok(ProcessResult::SkippedFiltered) => {
-                        log::debug!("🔍 Filtered out: {}", url);
+                        // Already logged
                     }
                     Ok(ProcessResult::AlreadyVisited) => {
                         // This is normal, no log needed
                     }
                     Ok(ProcessResult::Error(msg)) => {
-                        log::error!("❌ Error: {} - {}", url, msg);
+                        log::error!("Error downloading {}: {}", url, msg);
                     }
                     Err(e) => {
-                        log::error!("❌ Unexpected error downloading {}: {}", url, e);
+                        log::error!("Unexpected error: {} - {}", url, e);
                     }
                 }
             } else {
@@ -425,7 +396,7 @@ impl WebsiteMirror {
         let response = match client_for_download.get(url).send().await {
             Ok(resp) => resp,
             Err(e) => {
-                log::error!("❌ Request failed: {}", e);
+                log::error!("Failed to fetch HTML: {} - {}", url, e);
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -439,7 +410,7 @@ impl WebsiteMirror {
         };
 
         if response.status() != StatusCode::OK {
-            log::warn!("⚠️  HTTP {} for {}", response.status(), url);
+            log::warn!("HTTP {}: {}", response.status(), url);
             // Mark errored in persistent state
             state.mark_errored(
                 url.to_string(),
@@ -456,7 +427,7 @@ impl WebsiteMirror {
         let content = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
-                log::error!("❌ Failed to read response body: {}", e);
+                log::error!("Failed to read response: {} - {}", url, e);
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -497,9 +468,9 @@ impl WebsiteMirror {
         };
 
         // Categorize resources by priority
-        let mut critical_resources = Vec::new();
-        let mut high_resources = Vec::new();
-        let mut normal_resources = Vec::new();
+        let mut critical_resources = Vec::new(); // CSS/JS
+        let mut high_resources = Vec::new();     // HTML links
+        let mut normal_resources = Vec::new();   // Images/other
 
         for resource in &resources {
             let priority = match resource.resource_type {
@@ -530,42 +501,22 @@ impl WebsiteMirror {
                 }
             } else if !resource.resolved.starts_with(base_url) {
                 match resource.resource_type {
-                    ResourceType::Link => log::info!(
-                        "⏭️  Skipping external page: {} (but will download its media)",
-                        resource.original_url
-                    ),
+                    ResourceType::Link => {
+                        // Don't log skipped external pages - too noisy
+                    }
                     _ => {}
                 }
             } else if !should_process_resource_type(&resource.resource_type) {
-                let resource_type_str = match resource.resource_type {
-                    ResourceType::Image => "Image",
-                    ResourceType::CSS => "CSS",
-                    ResourceType::JavaScript => "JavaScript",
-                    ResourceType::Link => "Link",
-                    ResourceType::Other => "Other",
-                };
-                log::info!(
-                    "🔍 Skipping {} due to resource filter: {}",
-                    resource_type_str,
-                    resource.original_url
-                );
+                // Don't log filtered resources - too noisy
             }
         }
 
+        // Don't log resource discovery - too noisy
+
         // Download critical resources (CSS/JS)
         for resource in &critical_resources {
-            let resource_type_str = match resource.resource_type {
-                ResourceType::CSS => "CSS",
-                ResourceType::JavaScript => "JavaScript",
-                _ => "Critical",
-            };
-            log::info!(
-                "🔥 Processing CRITICAL {} resource: {}",
-                resource_type_str,
-                resource.original_url
-            );
 
-            if let Err(e) = Self::download_resource(
+            if let Err(_e) = Self::download_resource(
                 client,
                 file_manager,
                 &url_mapper,
@@ -577,12 +528,7 @@ impl WebsiteMirror {
             )
             .await
             {
-                log::error!(
-                    "⚠️  Failed to download CRITICAL {} resource {}: {}",
-                    resource_type_str,
-                    resource.resolved,
-                    e
-                );
+                // Error already logged in download_resource
             } else {
                 // Map original URL to local path for HTML rewriting
                 if let Ok(local_path) =
@@ -617,10 +563,6 @@ impl WebsiteMirror {
                             &local_path.to_string_lossy(),
                         );
                         url_mappings.insert(resource.original_url.clone(), relative_path);
-                        log::info!(
-                            "📝 Added link mapping: {} -> local path",
-                            resource.original_url
-                        );
                     }
                 }
             }
@@ -633,26 +575,12 @@ impl WebsiteMirror {
                 priority: DownloadPriority::High,
                 resource_type: Some(resource.resource_type.clone()),
             });
-            log::info!(
-                    "⚡ Queued HIGH priority HTML page: {}",
-                    resource.resolved
-                );
         }
 
         // Download normal priority resources (images, etc.)
         for resource in &normal_resources {
-            let resource_type_str = match resource.resource_type {
-                ResourceType::Image => "Image",
-                ResourceType::Other => "Other",
-                _ => "Normal",
-            };
-            log::info!(
-                "📥 Processing NORMAL {} resource: {}",
-                resource_type_str,
-                resource.original_url
-            );
 
-            if let Err(e) = Self::download_resource(
+            if let Err(_e) = Self::download_resource(
                 client,
                 file_manager,
                 &url_mapper,
@@ -664,12 +592,7 @@ impl WebsiteMirror {
             )
             .await
             {
-                log::error!(
-                    "⚠️  Failed to download NORMAL {} resource {}: {}",
-                    resource_type_str,
-                    resource.resolved,
-                    e
-                );
+                // Error already logged in download_resource
             } else {
                 // Map original URL to local path for HTML rewriting
                 if let Ok(local_path) =
@@ -694,17 +617,14 @@ impl WebsiteMirror {
 
         // Additional comprehensive WebP extension replacement for any remaining image references
         if convert_to_webp {
-            log::info!("🔍 Performing comprehensive WebP extension replacement...");
             html_content_updated =
                 Self::perform_comprehensive_webp_replacement(&html_content_updated);
         }
 
         // Save the updated HTML with local paths for resources
         let local_html_path = url_mapper.url_to_local_path(url, &ResourceType::Link)?;
-        log::debug!("💾 Saving HTML to: {}", local_html_path.display());
-        let saved_path =
+        let _saved_path =
             file_manager.save_file(&local_html_path, html_content_updated.as_bytes())?;
-        log::debug!("✅ Saved HTML to: {}", saved_path.display());
 
         // Track successful HTML download
         let size_bytes = html_content_updated.len() as u64;
@@ -720,6 +640,8 @@ impl WebsiteMirror {
             size_bytes,
         );
 
+        log::info!("Downloaded HTML: {}", url);
+
         Ok(ProcessResult::Downloaded)
     }
 
@@ -731,11 +653,8 @@ impl WebsiteMirror {
         convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
     ) -> Result<ProcessResult> {
-        log::debug!("🎨 Processing CSS file: {}", url);
-
         // Check if CSS already downloaded using persistent state
         if state.is_visited(url) {
-            log::debug!("⏭️  Skipping CSS (already processed): {}", url);
             // Track as skipped in run logger (only if from previous run)
             if state.should_track_as_skipped(url) {
                 run_logger.track_skipped();
@@ -747,7 +666,7 @@ impl WebsiteMirror {
         let response = match client.get(url).send().await {
             Ok(resp) => resp,
             Err(e) => {
-                log::error!("❌ Request failed: {}", e);
+                log::error!("Failed to fetch CSS: {} - {}", url, e);
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -761,7 +680,7 @@ impl WebsiteMirror {
         };
 
         if response.status() != StatusCode::OK {
-            log::warn!("⚠️  HTTP {} for {}", response.status(), url);
+            log::warn!("HTTP {}: {}", response.status(), url);
             // Mark errored in persistent state
             state.mark_errored(
                 url.to_string(),
@@ -778,7 +697,7 @@ impl WebsiteMirror {
         let content = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
-                log::error!("❌ Failed to read response body: {}", e);
+                log::error!("Failed to read response: {} - {}", url, e);
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -801,11 +720,12 @@ impl WebsiteMirror {
         page_html_parser
             .extract_background_images_from_css(&css_content, &mut background_resources);
 
+        // Don't log background images - too noisy
+
         // Download background images with normal priority (after CSS/JS)
         for resource in &background_resources {
-            log::info!("📥 Processing background image: {}", resource.original_url);
             let url_mapper = UrlMapper::new(convert_to_webp)?;
-            if let Err(e) = Self::download_resource(
+            if let Err(_e) = Self::download_resource(
                 client,
                 file_manager,
                 &url_mapper,
@@ -817,20 +737,14 @@ impl WebsiteMirror {
             )
             .await
             {
-                log::error!(
-                    "⚠️  Failed to download background image {}: {}",
-                    resource.resolved,
-                    e
-                );
+                // Error already logged in download_resource
             }
         }
 
         // Save the CSS file
         let url_mapper = UrlMapper::new(convert_to_webp)?;
         let local_path = url_mapper.url_to_local_path(url, &ResourceType::CSS)?;
-        log::debug!("💾 Saving CSS to: {}", local_path.display());
-        let saved_path = file_manager.save_file(&local_path, &content)?;
-        log::debug!("✅ Saved CSS to: {:?}", saved_path);
+        let _saved_path = file_manager.save_file(&local_path, &content)?;
 
         // Track successful CSS download
         let size_bytes = content.len() as u64;
@@ -845,6 +759,8 @@ impl WebsiteMirror {
             ResourceType::CSS,
             size_bytes,
         );
+
+        log::info!("Downloaded CSS: {}", url);
 
         Ok(ProcessResult::Downloaded)
     }
@@ -935,7 +851,6 @@ impl WebsiteMirror {
     ) -> Result<ProcessResult> {
         // Check if resource already downloaded using persistent state
         if state.is_visited(url) {
-            log::debug!("⏭️  Skipping resource (already processed): {}", url);
             // Track as skipped in run logger (only if from previous run)
             if state.should_track_as_skipped(url) {
                 run_logger.track_skipped();
@@ -949,8 +864,8 @@ impl WebsiteMirror {
         // Determine resource type string for better logging
         let resource_type_str = match resource_type {
             ResourceType::CSS => "CSS",
-            ResourceType::JavaScript => "JavaScript",
-            ResourceType::Image => "Image",
+            ResourceType::JavaScript => "JS",
+            ResourceType::Image => "image",
             ResourceType::Link => "HTML",
             ResourceType::Other => {
                 if url.ends_with(".woff")
@@ -958,24 +873,17 @@ impl WebsiteMirror {
                     || url.ends_with(".ttf")
                     || url.ends_with(".eot")
                 {
-                    "Font"
+                    "font"
                 } else {
-                    "Resource"
+                    "resource"
                 }
             }
         };
 
-        log::debug!("📥 Downloading {}: {}", resource_type_str, url);
-
         let response = match client.get(url).send().await {
             Ok(resp) => resp,
             Err(e) => {
-                log::error!(
-                    "❌ Failed to send request for {} {}: {}",
-                    resource_type_str,
-                    url,
-                    e
-                );
+                log::error!("Failed to fetch {}: {} - {}", resource_type_str, url, e);
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -989,12 +897,7 @@ impl WebsiteMirror {
         };
 
         if response.status() != StatusCode::OK {
-            log::warn!(
-                "⚠️  HTTP {} for {} {}",
-                response.status(),
-                resource_type_str,
-                url
-            );
+            log::warn!("HTTP {}: {} ({})", response.status(), url, resource_type_str);
             // Mark errored in persistent state
             state.mark_errored(
                 url.to_string(),
@@ -1018,12 +921,7 @@ impl WebsiteMirror {
         let content = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
-                log::error!(
-                    "❌ Failed to read {} body {}: {}",
-                    resource_type_str,
-                    url,
-                    e
-                );
+                log::error!("Failed to read response: {} - {}", url, e);
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -1056,10 +954,10 @@ impl WebsiteMirror {
 
         // Note: The local_path already has the correct extension (.webp if convert_to_webp is true)
         // because UrlMapper handles the conversion logic
-        let saved_path = match file_manager.save_file(&local_path, &final_content) {
+        let _saved_path = match file_manager.save_file(&local_path, &final_content) {
             Ok(path) => path,
             Err(e) => {
-                log::error!("❌ Failed to save {} {}: {}", resource_type_str, url, e);
+                log::error!("Failed to save {}: {} - {}", resource_type_str, url, e);
                 // Mark errored in persistent state
                 state.mark_errored(
                     url.to_string(),
@@ -1084,11 +982,7 @@ impl WebsiteMirror {
             size_bytes,
         );
 
-        log::info!(
-            "✅ Downloaded {} to: {}",
-            resource_type_str,
-            saved_path.display()
-        );
+        log::info!("Downloaded {}: {}", resource_type_str, url);
 
         Ok(ProcessResult::Downloaded)
     }

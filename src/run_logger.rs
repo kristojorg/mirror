@@ -55,6 +55,10 @@ impl RunLogger {
         stats_bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
         stats_bar.set_message("📊 Initializing mirror...");
 
+        let start_time = Instant::now();
+        let persistent_state: Arc<Mutex<Option<Arc<PersistentState>>>> = Arc::new(Mutex::new(None));
+        let run_stats: Arc<Mutex<RunStats>> = Arc::new(Mutex::new(RunStats::default()));
+
         // Clone for the logger closure
         let file_for_logger = Arc::clone(&log_file);
         let mp_for_logger = multi_progress.clone();
@@ -67,13 +71,15 @@ impl RunLogger {
         env_logger::Builder::new()
             .filter_level(LevelFilter::Info)
             .format(move |_buf, record| {
-                // Format message for terminal (with colors/emojis)
+                use colored::*;
+
+                // Format message for terminal with colors (no emojis)
                 let terminal_msg = match record.level() {
-                    Level::Error => format!("❌ {}", record.args()),
-                    Level::Warn => format!("⚠️  {}", record.args()),
+                    Level::Error => format!("{}", record.args()).red().to_string(),
+                    Level::Warn => format!("{}", record.args()).yellow().to_string(),
                     Level::Info => format!("{}", record.args()),
-                    Level::Debug => format!("🔍 {}", record.args()),
-                    Level::Trace => format!("🔬 {}", record.args()),
+                    Level::Debug => format!("{}", record.args()).dimmed().to_string(),
+                    Level::Trace => format!("{}", record.args()).dimmed().to_string(),
                 };
 
                 // Print to terminal above the progress bar
@@ -143,11 +149,11 @@ impl RunLogger {
         let logger = RunLogger {
             log_file,
             run_dir,
-            start_time: Instant::now(),
-            persistent_state: Arc::new(Mutex::new(None)),
+            start_time,
+            persistent_state,
             multi_progress,
             stats_bar,
-            run_stats: Arc::new(Mutex::new(RunStats::default())),
+            run_stats,
         };
 
         // Start the stats updater thread
