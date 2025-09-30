@@ -63,6 +63,8 @@ pub struct PersistentState {
     cache_file: PathBuf,
     // Track URLs downloaded in current run (not persisted, in-memory only)
     current_run_downloads: Arc<Mutex<HashSet<String>>>,
+    // Track URLs we've already checked/attempted this run (for skip deduplication)
+    current_run_checked: Arc<Mutex<HashSet<String>>>,
     // Optional run logger for tracking current run stats
     run_logger: Arc<Mutex<Option<Arc<RunLogger>>>>,
 }
@@ -115,6 +117,7 @@ impl PersistentState {
             data: Arc::new(Mutex::new(data)),
             cache_file,
             current_run_downloads: Arc::new(Mutex::new(HashSet::new())),
+            current_run_checked: Arc::new(Mutex::new(HashSet::new())),
             run_logger: Arc::new(Mutex::new(None)),
         })
     }
@@ -375,7 +378,22 @@ impl PersistentState {
     }
 
     /// Checks if a URL should be tracked as skipped (i.e., was downloaded in a previous run)
+    /// Only returns true the FIRST time we check a given URL in this run
     pub fn should_track_as_skipped(&self, url: &str) -> bool {
+        let normalized_url = UrlMapper::normalize_root_url(url);
+
+        // Check if we've already checked this URL this run
+        let mut checked = self.current_run_checked.lock().unwrap();
+        if checked.contains(&normalized_url) {
+            // Already checked/counted this URL, don't count again
+            return false;
+        }
+
+        // Mark as checked for this run
+        checked.insert(normalized_url.clone());
+        drop(checked);
+
+        // Only track as skipped if it was downloaded in a previous run
         self.is_visited(url) && !self.was_downloaded_this_run(url)
     }
 
