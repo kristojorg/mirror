@@ -169,7 +169,7 @@ impl PersistentState {
                 data.queue
                     .iter()
                     .position(|t| !matches!(t.priority, DownloadPriority::Critical))
-                    .unwrap_or(0)
+                    .unwrap_or(data.queue.len())
             }
             DownloadPriority::Normal => data.queue.len(),  // Back of queue
         };

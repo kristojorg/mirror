@@ -415,8 +415,8 @@ impl WebsiteMirror {
     ) -> Result<ProcessResult> {
         log::debug!("📄 Processing HTML page: {}", url);
 
-        // Note: Complex resumption logic removed - PersistentState will handle tracking
-        // what has been downloaded. Simple file exists checks will be replaced in Phase 4.
+        // Note: Complex resumption logic removed - PersistentState handles all tracking
+        // and deduplication. No need to check files on disk or reconstruct URLs.
         let url_mapper = UrlMapper::new(convert_to_webp)?;
 
         // Download the HTML page
