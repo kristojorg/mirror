@@ -17,6 +17,7 @@ fn test_basic_mirror_setup() {
         false,
         None,
         false,
+        true, // no_proxy
     )
     .unwrap();
 
@@ -110,6 +111,7 @@ fn test_resource_type_filtering() {
         false,
         None,
         false,
+        true, // no_proxy
     )
     .unwrap();
 
@@ -128,6 +130,7 @@ fn test_resource_type_filtering() {
         false,
         Some(vec!["images".to_string()]),
         false,
+        true, // no_proxy
     )
     .unwrap();
 
@@ -146,6 +149,7 @@ fn test_resource_type_filtering() {
         false,
         Some(vec!["css".to_string(), "js".to_string()]),
         false,
+        true, // no_proxy
     )
     .unwrap();
 
@@ -168,6 +172,7 @@ fn test_webp_conversion_flag() {
         false,
         None,
         true,
+        true, // no_proxy
     )
     .unwrap();
 
@@ -187,6 +192,7 @@ fn test_full_mirror_options() {
         true, // download_external
         None,
         false,
+        true, // no_proxy
     )
     .unwrap();
 
@@ -344,6 +350,7 @@ fn test_webp_extension_rewriting_integration() {
         false,
         None,
         true, // Enable WebP conversion
+        true, // no_proxy
     )
     .unwrap();
 

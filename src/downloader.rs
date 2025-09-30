@@ -207,8 +207,9 @@ impl WebsiteMirror {
         download_external: bool,
         only_resources: Option<Vec<String>>,
         convert_to_webp: bool,
+        no_proxy: bool,
     ) -> Result<Self> {
-        let client = Self::build_http_client()?;
+        let client = Self::build_http_client(no_proxy)?;
         let file_manager = FileManager::new(output_dir)?;
         let html_parser = HtmlParser::new(base_url)?;
 
@@ -242,16 +243,19 @@ impl WebsiteMirror {
         })
     }
 
-    fn build_http_client() -> Result<Client> {
+    fn build_http_client(no_proxy: bool) -> Result<Client> {
         // Build a simple HTTP client with default SSL handling
-        let proxy =
-            reqwest::Proxy::all("https://user-spxihizegc:wk0c88X0N~nRibgUxm@gate.decodo.com:7000")?;
-        let client = ClientBuilder::new()
+        let mut builder = ClientBuilder::new()
             .use_rustls_tls()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .proxy(proxy)
-            .timeout(std::time::Duration::from_secs(480))
-            .build()?;
+            .timeout(std::time::Duration::from_secs(480));
+
+        if !no_proxy {
+            let proxy = reqwest::Proxy::all("https://user-spxihizegc:wk0c88X0N~nRibgUxm@gate.decodo.com:7000")?;
+            builder = builder.proxy(proxy);
+        }
+
+        let client = builder.build()?;
 
         Ok(client)
     }
@@ -1001,6 +1005,7 @@ mod tests {
             false,
             None,
             false,
+            true, // no_proxy
         )
         .unwrap();
 
@@ -1024,6 +1029,7 @@ mod tests {
             true,
             Some(vec!["images".to_string()]),
             true,
+            false, // no_proxy
         )
         .unwrap();
 
@@ -1047,6 +1053,7 @@ mod tests {
             false,
             None,
             false,
+            true, // no_proxy
         )
         .unwrap();
 
@@ -1066,6 +1073,7 @@ mod tests {
             false,
             Some(vec!["images".to_string(), "css".to_string()]),
             false,
+            true, // no_proxy
         )
         .unwrap();
 
@@ -1210,6 +1218,7 @@ mod tests {
             false,
             None,
             false,
+            true, // no_proxy
         )
         .unwrap();
 
@@ -1230,6 +1239,7 @@ mod tests {
             false,
             None,
             false,
+            true, // no_proxy
         )
         .unwrap();
 

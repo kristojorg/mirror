@@ -39,6 +39,7 @@ fn test_webp_extension_rewriting_in_html() {
         false,
         None,
         true, // Enable WebP conversion
+        true, // no_proxy
     )
     .unwrap();
 

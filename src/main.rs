@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
         download_external,
         args.only_resources.clone(),
         args.convert_to_webp,
+        args.no_proxy,
     )?;
 
     // Perform the mirroring

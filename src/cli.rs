@@ -58,6 +58,10 @@ pub struct MirrorCommand {
     /// Convert JPEG/PNG images to WebP format for better compression
     #[arg(long)]
     pub convert_to_webp: bool,
+
+    /// Disable the use of the proxy server
+    #[arg(long)]
+    pub no_proxy: bool,
 }
 
 #[cfg(test)]
