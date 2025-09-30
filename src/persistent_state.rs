@@ -60,6 +60,8 @@ pub struct DownloadTask {
 pub struct PersistentState {
     data: Arc<Mutex<StateData>>,
     cache_file: PathBuf,
+    // Track URLs downloaded in current run (not persisted, in-memory only)
+    current_run_downloads: Arc<Mutex<HashSet<String>>>,
 }
 
 impl PersistentState {
@@ -109,6 +111,7 @@ impl PersistentState {
         Ok(Self {
             data: Arc::new(Mutex::new(data)),
             cache_file,
+            current_run_downloads: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -191,6 +194,9 @@ impl PersistentState {
 
         // Normalize URL for consistency
         let normalized_url = UrlMapper::normalize_root_url(&url);
+
+        // Track this URL as downloaded in current run
+        self.current_run_downloads.lock().unwrap().insert(normalized_url.clone());
 
         // ATOMIC: Move from processing to downloaded
         data.processing.remove(&normalized_url);
@@ -350,5 +356,16 @@ impl PersistentState {
         *data = StateData::default();
         drop(data);
         self.save().ok();
+    }
+
+    /// Checks if a URL was downloaded in the current run
+    pub fn was_downloaded_this_run(&self, url: &str) -> bool {
+        let normalized_url = UrlMapper::normalize_root_url(url);
+        self.current_run_downloads.lock().unwrap().contains(&normalized_url)
+    }
+
+    /// Checks if a URL should be tracked as skipped (i.e., was downloaded in a previous run)
+    pub fn should_track_as_skipped(&self, url: &str) -> bool {
+        self.is_visited(url) && !self.was_downloaded_this_run(url)
     }
 }

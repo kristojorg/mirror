@@ -740,9 +740,11 @@ impl WebsiteMirror {
         // Check if CSS already downloaded using persistent state
         if state.is_visited(url) {
             log::debug!("⏭️  Skipping CSS (already processed): {}", url);
-            // Track as skipped in run logger
+            // Track as skipped in run logger (only if from previous run)
             if let Some(ref logger) = run_logger {
-                logger.track_skipped();
+                if state.should_track_as_skipped(url) {
+                    logger.track_skipped();
+                }
             }
             return Ok(ProcessResult::SkippedAlreadyExists);
         }
@@ -944,9 +946,11 @@ impl WebsiteMirror {
         // Check if resource already downloaded using persistent state
         if state.is_visited(url) {
             log::debug!("⏭️  Skipping resource (already processed): {}", url);
-            // Track as skipped in run logger
+            // Track as skipped in run logger (only if from previous run)
             if let Some(ref logger) = run_logger {
-                logger.track_skipped();
+                if state.should_track_as_skipped(url) {
+                    logger.track_skipped();
+                }
             }
             return Ok(ProcessResult::SkippedAlreadyExists);
         }
