@@ -342,7 +342,7 @@ impl WebsiteMirror {
                 progress_bar.set_message(format!("Downloading: {}", url));
 
                 let base_url = self.base_url.clone();
-                let run_logger = Some(self.run_logger.clone());
+                let run_logger = self.run_logger.clone();
 
                 // Process the download directly instead of spawning a task
                 match Self::download_and_process_url(
@@ -411,7 +411,7 @@ impl WebsiteMirror {
         base_url: &str,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
-        run_logger: &Option<Arc<RunLogger>>,
+        run_logger: &Arc<RunLogger>,
     ) -> Result<ProcessResult> {
         log::debug!("📄 Processing HTML page: {}", url);
 
@@ -433,9 +433,7 @@ impl WebsiteMirror {
                     ResourceType::Link,
                 );
                 // Track error in run logger
-                if let Some(ref logger) = run_logger {
-                    logger.track_error();
-                }
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
             }
         };
@@ -712,9 +710,7 @@ impl WebsiteMirror {
         let size_bytes = html_content_updated.len() as u64;
 
         // Track downloaded in run logger
-        if let Some(ref logger) = run_logger {
-            logger.track_downloaded(size_bytes);
-        }
+        run_logger.track_downloaded(size_bytes);
 
         // Mark completed in persistent state
         state.mark_completed(
@@ -733,7 +729,7 @@ impl WebsiteMirror {
         url: &str,
         state: &Arc<PersistentState>,
         convert_to_webp: bool,
-        run_logger: &Option<Arc<RunLogger>>,
+        run_logger: &Arc<RunLogger>,
     ) -> Result<ProcessResult> {
         log::debug!("🎨 Processing CSS file: {}", url);
 
@@ -741,10 +737,8 @@ impl WebsiteMirror {
         if state.is_visited(url) {
             log::debug!("⏭️  Skipping CSS (already processed): {}", url);
             // Track as skipped in run logger (only if from previous run)
-            if let Some(ref logger) = run_logger {
-                if state.should_track_as_skipped(url) {
-                    logger.track_skipped();
-                }
+            if state.should_track_as_skipped(url) {
+                run_logger.track_skipped();
             }
             return Ok(ProcessResult::SkippedAlreadyExists);
         }
@@ -761,9 +755,7 @@ impl WebsiteMirror {
                     ResourceType::CSS,
                 );
                 // Track error in run logger
-                if let Some(ref logger) = run_logger {
-                    logger.track_error();
-                }
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
             }
         };
@@ -844,9 +836,7 @@ impl WebsiteMirror {
         let size_bytes = content.len() as u64;
 
         // Track downloaded in run logger
-        if let Some(ref logger) = run_logger {
-            logger.track_downloaded(size_bytes);
-        }
+        run_logger.track_downloaded(size_bytes);
 
         // Mark completed in persistent state
         state.mark_completed(
@@ -870,7 +860,7 @@ impl WebsiteMirror {
         resource_type: Option<ResourceType>,
         only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
-        run_logger: &Option<Arc<RunLogger>>,
+        run_logger: &Arc<RunLogger>,
     ) -> Result<ProcessResult> {
         // PersistentState already handles deduplication via dequeue
         // The URL is already moved to processing when dequeued
@@ -941,16 +931,14 @@ impl WebsiteMirror {
         resource_type: &ResourceType,
         state: &Arc<PersistentState>,
         convert_to_webp: bool,
-        run_logger: &Option<Arc<RunLogger>>,
+        run_logger: &Arc<RunLogger>,
     ) -> Result<ProcessResult> {
         // Check if resource already downloaded using persistent state
         if state.is_visited(url) {
             log::debug!("⏭️  Skipping resource (already processed): {}", url);
             // Track as skipped in run logger (only if from previous run)
-            if let Some(ref logger) = run_logger {
-                if state.should_track_as_skipped(url) {
-                    logger.track_skipped();
-                }
+            if state.should_track_as_skipped(url) {
+                run_logger.track_skipped();
             }
             return Ok(ProcessResult::SkippedAlreadyExists);
         }
@@ -995,9 +983,7 @@ impl WebsiteMirror {
                     resource_type.clone(),
                 );
                 // Track error in run logger
-                if let Some(ref logger) = run_logger {
-                    logger.track_error();
-                }
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
             }
         };
@@ -1088,9 +1074,7 @@ impl WebsiteMirror {
         let size_bytes = final_content.len() as u64;
 
         // Track downloaded in run logger
-        if let Some(ref logger) = run_logger {
-            logger.track_downloaded(size_bytes);
-        }
+        run_logger.track_downloaded(size_bytes);
 
         // Mark completed in persistent state
         state.mark_completed(
