@@ -53,6 +53,7 @@ impl RunLogger {
         // Create a sticky stats bar at the top
         let stats_bar = multi_progress.add(ProgressBar::new(0));
         stats_bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+        stats_bar.enable_steady_tick(Duration::from_millis(100));
         stats_bar.set_message("📊 Initializing mirror...");
 
         let start_time = Instant::now();
@@ -62,10 +63,6 @@ impl RunLogger {
         // Clone for the logger closure
         let file_for_logger = Arc::clone(&log_file);
         let mp_for_logger = multi_progress.clone();
-        let stats_bar_for_logger = stats_bar.clone();
-        let persistent_state_for_logger = Arc::clone(&persistent_state);
-        let run_stats_for_logger = Arc::clone(&run_stats);
-        let start_time_for_logger = start_time;
 
         // Set up env_logger with custom format
         env_logger::Builder::new()
@@ -83,34 +80,8 @@ impl RunLogger {
                 };
 
                 // Print to terminal above the progress bar
-                mp_for_logger.println(&terminal_msg).unwrap_or(());
-
-                // Immediately update the stats bar to keep it visible
-                let elapsed = start_time_for_logger.elapsed();
-                let duration = format!(
-                    "{:02}:{:02}:{:02}",
-                    elapsed.as_secs() / 3600,
-                    (elapsed.as_secs() % 3600) / 60,
-                    elapsed.as_secs() % 60
-                );
-                let run = run_stats_for_logger.lock().unwrap().clone();
-                let message = if let Some(ref state) = *persistent_state_for_logger.lock().unwrap() {
-                    let stats = state.get_statistics();
-                    let total_files: usize = stats.downloads.values().sum();
-                    format!(
-                        "⏱  {} │ THIS RUN: ⬇️  {} new │ ⏭️  {} skipped │ ❌ {} errors │ 💾 {} │ TOTAL: 📁 {} files │ 💾 {}",
-                        duration,
-                        HumanCount(run.downloaded as u64),
-                        HumanCount(run.skipped as u64),
-                        run.errors,
-                        HumanBytes(run.bytes),
-                        HumanCount(total_files as u64),
-                        HumanBytes(stats.total_bytes)
-                    )
-                } else {
-                    format!("⏱  {} │ Waiting for persistent state...", duration)
-                };
-                stats_bar_for_logger.set_message(message);
+                // The stats bar is updated by the background thread, not here
+                let _ = mp_for_logger.println(&terminal_msg);
 
                 // Write to file (plain text with timestamp)
                 if let Ok(mut file) = file_for_logger.lock() {

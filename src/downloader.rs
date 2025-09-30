@@ -1,6 +1,4 @@
 use anyhow::Result;
-use indicatif::{ProgressBar, ProgressStyle};
-
 use reqwest::{Client, ClientBuilder, StatusCode};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -284,13 +282,6 @@ impl WebsiteMirror {
             log::info!("Resource filter active - skipping HTML page crawling");
         }
 
-        let progress_bar = ProgressBar::new_spinner();
-        progress_bar.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner} {msg}")
-                .unwrap(),
-        );
-
         // Process the download queue
         loop {
             // Use PersistentState dequeue which automatically moves URL to processing
@@ -309,9 +300,6 @@ impl WebsiteMirror {
                 let client = self.client.clone();
                 let file_manager = self.file_manager.clone();
                 let state = self.state.clone();
-
-                progress_bar.set_message(format!("Downloading: {}", url));
-
                 let base_url = self.base_url.clone();
                 let run_logger = self.run_logger.clone();
 
@@ -367,8 +355,6 @@ impl WebsiteMirror {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
         }
-
-        progress_bar.finish_with_message("✅ All downloads completed!");
 
         Ok(())
     }
