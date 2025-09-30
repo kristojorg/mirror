@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::file_manager::FileManager;
 use crate::html_parser::{HtmlParser, ResourceType};
 use crate::html_rewriter::HtmlRewriter;
-use crate::persistent_state::{PersistentState, DownloadTask};
+use crate::persistent_state::{DownloadTask, PersistentState};
 use crate::run_logger::RunLogger;
 use crate::url_mapper::UrlMapper;
 use webp::Encoder;
@@ -66,8 +66,8 @@ pub struct WebsiteMirror {
     client: Client,
     file_manager: FileManager,
     html_parser: HtmlParser,
-    state: Arc<PersistentState>,  // Unified persistent state management
-    run_logger: Arc<RunLogger>, // Runtime logger for tracking this run
+    state: Arc<PersistentState>, // Unified persistent state management
+    run_logger: Arc<RunLogger>,  // Runtime logger for tracking this run
 }
 
 impl WebsiteMirror {
@@ -150,7 +150,11 @@ impl WebsiteMirror {
         let img = match image::load_from_memory(image_data) {
             Ok(img) => img,
             Err(e) => {
-                log::warn!("Failed to decode image for WebP conversion: {} - {}", original_url, e);
+                log::warn!(
+                    "Failed to decode image for WebP conversion: {} - {}",
+                    original_url,
+                    e
+                );
                 return Ok(image_data.to_vec()); // Return original data if conversion fails
             }
         };
@@ -237,12 +241,12 @@ impl WebsiteMirror {
 
     fn build_http_client() -> Result<Client> {
         // Build a simple HTTP client with default SSL handling
-        let _proxy =
+        let proxy =
             reqwest::Proxy::all("https://user-spxihizegc:wk0c88X0N~nRibgUxm@gate.decodo.com:7000")?;
         let client = ClientBuilder::new()
             .use_rustls_tls()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            // .proxy(proxy)
+            .proxy(proxy)
             .timeout(std::time::Duration::from_secs(480))
             .build()?;
 
@@ -267,7 +271,11 @@ impl WebsiteMirror {
     pub async fn mirror_website(&mut self) -> Result<()> {
         log::info!("Starting mirror: {}", self.base_url);
         log::info!("Output: {:?}", self.output_dir);
-        log::info!("Max depth: {} | Max concurrent: {}", self.max_depth, self.max_concurrent);
+        log::info!(
+            "Max depth: {} | Max concurrent: {}",
+            self.max_depth,
+            self.max_concurrent
+        );
 
         // Add the base URL to the download queue with high priority (HTML page)
         // Only add HTML pages if we're not filtering to specific resource types
@@ -455,8 +463,8 @@ impl WebsiteMirror {
 
         // Categorize resources by priority
         let mut critical_resources = Vec::new(); // CSS/JS
-        let mut high_resources = Vec::new();     // HTML links
-        let mut normal_resources = Vec::new();   // Images/other
+        let mut high_resources = Vec::new(); // HTML links
+        let mut normal_resources = Vec::new(); // Images/other
 
         for resource in &resources {
             let priority = match resource.resource_type {
@@ -501,7 +509,6 @@ impl WebsiteMirror {
 
         // Download critical resources (CSS/JS)
         for resource in &critical_resources {
-
             if let Err(_e) = Self::download_resource(
                 client,
                 file_manager,
@@ -565,7 +572,6 @@ impl WebsiteMirror {
 
         // Download normal priority resources (images, etc.)
         for resource in &normal_resources {
-
             if let Err(_e) = Self::download_resource(
                 client,
                 file_manager,
@@ -883,7 +889,12 @@ impl WebsiteMirror {
         };
 
         if response.status() != StatusCode::OK {
-            log::warn!("HTTP {}: {} ({})", response.status(), url, resource_type_str);
+            log::warn!(
+                "HTTP {}: {} ({})",
+                response.status(),
+                url,
+                resource_type_str
+            );
             // Mark errored in persistent state
             state.mark_errored(
                 url.to_string(),
@@ -1097,7 +1108,6 @@ mod tests {
         assert_eq!(returned_data, invalid_data);
     }
 
-
     #[test]
     fn test_download_task_ordering() {
         let task1 = DownloadTask {
@@ -1237,5 +1247,4 @@ mod tests {
 
     // Note: WebsiteMirror doesn't implement PartialEq, Eq, or Hash due to complex fields
     // These tests are removed as they're not essential for functionality
-
 }
