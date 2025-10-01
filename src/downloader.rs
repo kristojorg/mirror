@@ -64,6 +64,7 @@ pub struct WebsiteMirror {
     pub download_external: bool,
     pub only_resources: Option<Vec<String>>,
     pub convert_to_webp: bool,
+    pub using_proxy: bool,
     pub ignore_patterns: Option<Vec<Regex>>,
     client: Client,
     file_manager: FileManager,
@@ -83,6 +84,7 @@ impl std::fmt::Debug for WebsiteMirror {
             .field("download_external", &self.download_external)
             .field("only_resources", &self.only_resources)
             .field("convert_to_webp", &self.convert_to_webp)
+            .field("using_proxy", &self.using_proxy)
             .field(
                 "ignore_patterns",
                 &self
@@ -250,6 +252,7 @@ impl WebsiteMirror {
         let client = Self::build_http_client(no_proxy)?;
         let file_manager = FileManager::new(output_dir)?;
         let html_parser = HtmlParser::new(base_url)?;
+        let using_proxy = !no_proxy;
 
         // Compile ignore patterns into regex
         let compiled_patterns = if let Some(patterns) = ignore_patterns {
@@ -272,18 +275,15 @@ impl WebsiteMirror {
             None
         };
 
-        // Create persistent state (automatically loads existing state or creates new)
-        let state = Arc::new(PersistentState::new(output_dir)?);
-
-        // Create the run logger internally
+        // Create the run logger first so PersistentState can log during initialization
         let run_logger = RunLogger::init(output_dir)?;
         let run_logger = Arc::new(run_logger);
 
-        // Set PersistentState for RunLogger
-        run_logger.set_persistent_state(Arc::clone(&state));
+        // Create persistent state (automatically loads existing state or creates new)
+        let state = Arc::new(PersistentState::new(output_dir)?);
 
-        // Set RunLogger for PersistentState (so mark_errored can track errors)
-        state.set_run_logger(Arc::clone(&run_logger));
+        // Set PersistentState for RunLogger (one-way dependency for statistics)
+        run_logger.set_persistent_state(Arc::clone(&state));
 
         Ok(Self {
             base_url: base_url.to_string(),
@@ -294,6 +294,7 @@ impl WebsiteMirror {
             download_external,
             only_resources,
             convert_to_webp,
+            using_proxy,
             ignore_patterns: compiled_patterns,
             client,
             file_manager,
@@ -338,6 +339,20 @@ impl WebsiteMirror {
     }
 
     pub async fn mirror_website(&mut self) -> Result<()> {
+        let command_args: Vec<String> = std::env::args().collect();
+        if command_args.is_empty() {
+            log::info!("Startup command: <unavailable>");
+        } else {
+            log::info!("Startup command: {}", command_args.join(" "));
+        }
+        log::info!(
+            "Proxy: {}",
+            if self.using_proxy {
+                "enabled"
+            } else {
+                "disabled (--no-proxy)"
+            }
+        );
         log::info!("Starting mirror: {}", self.base_url);
         log::info!("Output: {:?}", self.output_dir);
         log::info!(
@@ -482,6 +497,7 @@ impl WebsiteMirror {
                     format!("Request failed: {}", e),
                     ResourceType::Link,
                 );
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
             }
         };
@@ -494,6 +510,7 @@ impl WebsiteMirror {
                 format!("HTTP {} for {}", response.status(), url),
                 ResourceType::Link,
             );
+            run_logger.track_error();
             return Ok(ProcessResult::Error(format!(
                 "HTTP {} for {}",
                 response.status(),
@@ -511,6 +528,7 @@ impl WebsiteMirror {
                     format!("Failed to read response body: {}", e),
                     ResourceType::Link,
                 );
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!(
                     "Failed to read response body: {}",
                     e
@@ -768,6 +786,7 @@ impl WebsiteMirror {
                     format!("Request failed: {}", e),
                     ResourceType::CSS,
                 );
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
             }
         };
@@ -780,6 +799,7 @@ impl WebsiteMirror {
                 format!("HTTP {} for {}", response.status(), url),
                 ResourceType::CSS,
             );
+            run_logger.track_error();
             return Ok(ProcessResult::Error(format!(
                 "HTTP {} for {}",
                 response.status(),
@@ -797,6 +817,7 @@ impl WebsiteMirror {
                     format!("Failed to read response body: {}", e),
                     ResourceType::CSS,
                 );
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!(
                     "Failed to read response body: {}",
                     e
@@ -985,6 +1006,7 @@ impl WebsiteMirror {
                     format!("Request failed: {}", e),
                     resource_type.clone(),
                 );
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
             }
         };
@@ -1002,6 +1024,7 @@ impl WebsiteMirror {
                 format!("HTTP {} for {}", response.status(), url),
                 resource_type.clone(),
             );
+            run_logger.track_error();
             return Ok(ProcessResult::Error(format!(
                 "HTTP {} for {}",
                 response.status(),
@@ -1026,6 +1049,7 @@ impl WebsiteMirror {
                     format!("Failed to read response body: {}", e),
                     resource_type.clone(),
                 );
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!(
                     "Failed to read response body: {}",
                     e
@@ -1062,6 +1086,7 @@ impl WebsiteMirror {
                     format!("Failed to save file: {}", e),
                     resource_type.clone(),
                 );
+                run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Failed to save file: {}", e)));
             }
         };

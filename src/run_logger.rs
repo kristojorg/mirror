@@ -334,7 +334,10 @@ impl RunLogger {
             HumanCount(run_stats.skipped as u64)
         );
         if current_run_ignored > 0 {
-            println!("Ignored (rules): {}", HumanCount(current_run_ignored as u64));
+            println!(
+                "Ignored (rules): {}",
+                HumanCount(current_run_ignored as u64)
+            );
         }
         if run_stats.errors > 0 {
             println!("Errors: {}", HumanCount(run_stats.errors as u64));

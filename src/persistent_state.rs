@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::downloader::DownloadPriority;
 use crate::html_parser::ResourceType;
-use crate::run_logger::RunLogger;
 use crate::url_mapper::UrlMapper;
 
 /// Statistics computed from the state data
@@ -78,8 +77,6 @@ pub struct PersistentState {
     current_run_checked: Arc<Mutex<HashSet<String>>>,
     // Track URLs ignored in current run (not persisted, in-memory only)
     current_run_ignored: Arc<Mutex<HashSet<String>>>,
-    // Optional run logger for tracking current run stats
-    run_logger: Arc<Mutex<Option<Arc<RunLogger>>>>,
 }
 
 impl PersistentState {
@@ -130,7 +127,6 @@ impl PersistentState {
             current_run_downloads: Arc::new(Mutex::new(HashSet::new())),
             current_run_checked: Arc::new(Mutex::new(HashSet::new())),
             current_run_ignored: Arc::new(Mutex::new(HashSet::new())),
-            run_logger: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -262,12 +258,6 @@ impl PersistentState {
             },
         );
         drop(data);
-
-        // Track error in run logger if available
-        if let Some(ref logger) = *self.run_logger.lock().unwrap() {
-            logger.track_error();
-        }
-
         self.save().ok();
     }
 
@@ -483,12 +473,6 @@ impl PersistentState {
 
         // Only track as skipped if it was downloaded in a previous run
         self.is_visited(url) && !self.was_downloaded_this_run(url)
-    }
-
-    /// Set the run logger for tracking current run statistics
-    pub fn set_run_logger(&self, logger: Arc<RunLogger>) {
-        let mut run_logger = self.run_logger.lock().unwrap();
-        *run_logger = Some(logger);
     }
 
     /// Gets the count of URLs ignored in the current run
