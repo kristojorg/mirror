@@ -368,6 +368,7 @@ impl WebsiteMirror {
                     depth: 0,
                     priority: DownloadPriority::High,
                     resource_type: None,
+                    source_url: None, // Base URL came from command line
                 });
             } else {
                 log::info!("Base URL matches ignore pattern - skipping");
@@ -386,6 +387,7 @@ impl WebsiteMirror {
                 let depth = task.depth;
                 let priority = task.priority.clone();
                 let resource_type = task.resource_type.clone();
+                let source_url = task.source_url.clone();
                 // Check depth limit (0 means unlimited)
                 if self.max_depth > 0 && depth > self.max_depth {
                     continue;
@@ -393,8 +395,12 @@ impl WebsiteMirror {
 
                 if self.should_ignore_url(&url) {
                     log::debug!("Ignored URL: {}", url);
-                    self.state
-                        .mark_ignored(&url, resource_type.as_ref(), "Matched ignore pattern");
+                    self.state.mark_ignored(
+                        &url,
+                        resource_type.as_ref(),
+                        "Matched ignore pattern",
+                        source_url.clone(),
+                    );
                     continue;
                 }
 
@@ -419,6 +425,7 @@ impl WebsiteMirror {
                     self.convert_to_webp,
                     &run_logger,
                     &ignore_patterns,
+                    source_url,
                 )
                 .await
                 {
@@ -473,6 +480,7 @@ impl WebsiteMirror {
         convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
         ignore_patterns: &Option<Vec<Regex>>,
+        source_url: Option<String>,
     ) -> Result<ProcessResult> {
         log::debug!("📄 Processing HTML page: {}", url);
 
@@ -492,6 +500,7 @@ impl WebsiteMirror {
                     url.to_string(),
                     format!("Request failed: {}", e),
                     ResourceType::Link,
+                    source_url.clone(),
                 );
                 run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
@@ -505,6 +514,7 @@ impl WebsiteMirror {
                 url.to_string(),
                 format!("HTTP {} for {}", response.status(), url),
                 ResourceType::Link,
+                source_url.clone(),
             );
             run_logger.track_error();
             return Ok(ProcessResult::Error(format!(
@@ -523,6 +533,7 @@ impl WebsiteMirror {
                     url.to_string(),
                     format!("Failed to read response body: {}", e),
                     ResourceType::Link,
+                    source_url.clone(),
                 );
                 run_logger.track_error();
                 return Ok(ProcessResult::Error(format!(
@@ -615,6 +626,7 @@ impl WebsiteMirror {
                 state,
                 convert_to_webp,
                 run_logger,
+                Some(url.to_string()), // Found on current HTML page
             )
             .await
             {
@@ -655,6 +667,7 @@ impl WebsiteMirror {
                         &resource.resolved,
                         Some(&resource.resource_type),
                         "Matched ignore pattern",
+                        Some(url.to_string()),
                     );
                     continue;
                 }
@@ -684,6 +697,7 @@ impl WebsiteMirror {
                 depth: depth + 1,
                 priority: DownloadPriority::High,
                 resource_type: Some(resource.resource_type.clone()),
+                source_url: Some(url.to_string()), // Found on current page
             });
         }
 
@@ -698,6 +712,7 @@ impl WebsiteMirror {
                 state,
                 convert_to_webp,
                 run_logger,
+                Some(url.to_string()), // Found on current HTML page
             )
             .await
             {
@@ -747,6 +762,7 @@ impl WebsiteMirror {
             local_html_path.to_string_lossy().to_string(),
             ResourceType::Link,
             size_bytes,
+            source_url,
         );
 
         log::info!("Downloaded HTML: {}", url);
@@ -761,6 +777,7 @@ impl WebsiteMirror {
         state: &Arc<PersistentState>,
         convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
+        source_url: Option<String>,
     ) -> Result<ProcessResult> {
         // Check if CSS already downloaded using persistent state
         if state.is_visited(url) {
@@ -781,6 +798,7 @@ impl WebsiteMirror {
                     url.to_string(),
                     format!("Request failed: {}", e),
                     ResourceType::CSS,
+                    source_url.clone(),
                 );
                 run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
@@ -794,6 +812,7 @@ impl WebsiteMirror {
                 url.to_string(),
                 format!("HTTP {} for {}", response.status(), url),
                 ResourceType::CSS,
+                source_url.clone(),
             );
             run_logger.track_error();
             return Ok(ProcessResult::Error(format!(
@@ -812,6 +831,7 @@ impl WebsiteMirror {
                     url.to_string(),
                     format!("Failed to read response body: {}", e),
                     ResourceType::CSS,
+                    source_url.clone(),
                 );
                 run_logger.track_error();
                 return Ok(ProcessResult::Error(format!(
@@ -842,6 +862,7 @@ impl WebsiteMirror {
                 state,
                 convert_to_webp,
                 run_logger,
+                Some(url.to_string()), // Found in current CSS file
             )
             .await
             {
@@ -866,6 +887,7 @@ impl WebsiteMirror {
             local_path.to_string_lossy().to_string(),
             ResourceType::CSS,
             size_bytes,
+            source_url,
         );
 
         log::info!("Downloaded CSS: {}", url);
@@ -886,6 +908,7 @@ impl WebsiteMirror {
         convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
         ignore_patterns: &Option<Vec<Regex>>,
+        source_url: Option<String>,
     ) -> Result<ProcessResult> {
         // PersistentState already handles deduplication via dequeue
         // The URL is already moved to processing when dequeued
@@ -913,6 +936,7 @@ impl WebsiteMirror {
                     convert_to_webp,
                     run_logger,
                     ignore_patterns,
+                    source_url.clone(),
                 )
                 .await
             }
@@ -925,6 +949,7 @@ impl WebsiteMirror {
                     state,
                     convert_to_webp,
                     run_logger,
+                    source_url.clone(),
                 )
                 .await
             }
@@ -941,6 +966,7 @@ impl WebsiteMirror {
                     state,
                     convert_to_webp,
                     run_logger,
+                    source_url, // Pass through from task
                 )
                 .await
             }
@@ -958,6 +984,7 @@ impl WebsiteMirror {
         state: &Arc<PersistentState>,
         convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
+        source_url: Option<String>,
     ) -> Result<ProcessResult> {
         // Check if resource already downloaded using persistent state
         if state.is_visited(url) {
@@ -999,6 +1026,7 @@ impl WebsiteMirror {
                     url.to_string(),
                     format!("Request failed: {}", e),
                     resource_type.clone(),
+                    source_url.clone(),
                 );
                 run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Request failed: {}", e)));
@@ -1017,6 +1045,7 @@ impl WebsiteMirror {
                 url.to_string(),
                 format!("HTTP {} for {}", response.status(), url),
                 resource_type.clone(),
+                source_url.clone(),
             );
             run_logger.track_error();
             return Ok(ProcessResult::Error(format!(
@@ -1042,6 +1071,7 @@ impl WebsiteMirror {
                     url.to_string(),
                     format!("Failed to read response body: {}", e),
                     resource_type.clone(),
+                    source_url.clone(),
                 );
                 run_logger.track_error();
                 return Ok(ProcessResult::Error(format!(
@@ -1079,6 +1109,7 @@ impl WebsiteMirror {
                     url.to_string(),
                     format!("Failed to save file: {}", e),
                     resource_type.clone(),
+                    source_url.clone(),
                 );
                 run_logger.track_error();
                 return Ok(ProcessResult::Error(format!("Failed to save file: {}", e)));
@@ -1097,6 +1128,7 @@ impl WebsiteMirror {
             local_path.to_string_lossy().to_string(),
             resource_type.clone(),
             size_bytes,
+            source_url,
         );
 
         log::info!("Downloaded {}: {}", resource_type_str, url);

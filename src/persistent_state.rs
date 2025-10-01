@@ -38,6 +38,8 @@ pub struct ResourceInfo {
     pub resource_type: String,
     pub size_bytes: u64,
     pub downloaded_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 /// Information about a failed download
@@ -46,6 +48,8 @@ pub struct ErrorInfo {
     pub error_message: String,
     pub attempted_at: String,
     pub resource_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 /// Information about a URL that was intentionally ignored
@@ -55,6 +59,8 @@ pub struct IgnoredInfo {
     pub ignored_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 /// A task in the download queue
@@ -64,6 +70,8 @@ pub struct DownloadTask {
     pub depth: usize,
     pub priority: DownloadPriority,
     pub resource_type: Option<ResourceType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 /// Main persistent state manager
@@ -95,12 +103,13 @@ impl PersistentState {
             let processing_count = loaded.processing.len();
             for url in loaded.processing.drain() {
                 // Re-queue at high priority to resume quickly
-                // Note: We lose the original depth/resource_type, but that's acceptable
+                // Note: We lose the original depth/resource_type/source, but that's acceptable
                 loaded.queue.push_front(DownloadTask {
                     url: url.clone(),
                     depth: 0, // Conservative depth to prevent deep recursion
                     priority: DownloadPriority::High,
                     resource_type: None,
+                    source_url: None,
                 });
             }
 
@@ -211,6 +220,7 @@ impl PersistentState {
         local_path: String,
         resource_type: ResourceType,
         size: u64,
+        source_url: Option<String>,
     ) {
         let mut data = self.data.lock().unwrap();
 
@@ -233,6 +243,7 @@ impl PersistentState {
                 resource_type: format!("{:?}", resource_type),
                 size_bytes: size,
                 downloaded_at: chrono::Local::now().to_rfc3339(),
+                source_url,
             },
         );
         drop(data);
@@ -240,7 +251,13 @@ impl PersistentState {
     }
 
     /// Marks a URL as errored
-    pub fn mark_errored(&self, url: String, error: String, resource_type: ResourceType) {
+    pub fn mark_errored(
+        &self,
+        url: String,
+        error: String,
+        resource_type: ResourceType,
+        source_url: Option<String>,
+    ) {
         let mut data = self.data.lock().unwrap();
 
         // Normalize URL for consistency
@@ -255,6 +272,7 @@ impl PersistentState {
                 error_message: error,
                 attempted_at: chrono::Local::now().to_rfc3339(),
                 resource_type: format!("{:?}", resource_type),
+                source_url,
             },
         );
         drop(data);
@@ -262,7 +280,13 @@ impl PersistentState {
     }
 
     /// Marks a URL as intentionally ignored (due to user-provided rules)
-    pub fn mark_ignored(&self, url: &str, resource_type: Option<&ResourceType>, reason: &str) {
+    pub fn mark_ignored(
+        &self,
+        url: &str,
+        resource_type: Option<&ResourceType>,
+        reason: &str,
+        source_url: Option<String>,
+    ) {
         let mut data = self.data.lock().unwrap();
         let normalized_url = UrlMapper::normalize_root_url(url);
         data.processing.remove(&normalized_url);
@@ -272,6 +296,7 @@ impl PersistentState {
                 reason: reason.to_string(),
                 ignored_at: chrono::Local::now().to_rfc3339(),
                 resource_type: resource_type.map(|rt| format!("{:?}", rt)),
+                source_url,
             },
         );
         drop(data);
@@ -306,6 +331,7 @@ impl PersistentState {
                 depth: 0,
                 priority: DownloadPriority::High,
                 resource_type: None,
+                source_url: None,
             });
         }
 
