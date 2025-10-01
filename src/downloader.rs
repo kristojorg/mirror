@@ -284,9 +284,6 @@ impl WebsiteMirror {
         // Set PersistentState for RunLogger
         run_logger.set_persistent_state(Arc::clone(&state));
 
-        // Set RunLogger for PersistentState (so mark_errored can track errors)
-        state.set_run_logger(Arc::clone(&run_logger));
-
         Ok(Self {
             base_url: base_url.to_string(),
             output_dir: output_dir.to_path_buf(),
