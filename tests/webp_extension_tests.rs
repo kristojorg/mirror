@@ -40,6 +40,7 @@ fn test_webp_extension_rewriting_in_html() {
         None,
         true, // Enable WebP conversion
         true, // no_proxy
+        None, // ignore_patterns
     )
     .unwrap();
 

@@ -12,27 +12,13 @@ async fn main() -> Result<()> {
 
     let args = MirrorCommand::parse();
 
-    // Handle full mirror option
-    let (max_depth, max_concurrent, ignore_robots, download_external) = if args.full_mirror {
-        // Full mirror: unlimited depth crawling of target site + all media files from any site
-        (0, 100, true, true)
-    } else {
-        // Standard mirror: limited depth + all media files from any site (ensures no 404s)
-        (
-            args.max_depth,
-            args.max_concurrent,
-            args.ignore_robots,
-            true,
-        )
-    };
-
     let mut mirror = WebsiteMirror::new(
         &args.url,
         &args.output_dir,
-        max_depth,
-        max_concurrent,
-        ignore_robots,
-        download_external,
+        args.max_depth,
+        args.max_concurrent,
+        !args.respect_robots, // ignore_robots is the inverse of respect_robots
+        true,                 // download_external is always true to ensure no 404s
         args.only_resources.clone(),
         args.convert_to_webp,
         args.no_proxy,
@@ -84,25 +70,6 @@ mod tests {
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
-    }
-
-    #[test]
-    fn test_parse_args_with_full_mirror() {
-        let args = vec![
-            "website-mirror".to_string(),
-            "https://example.com".to_string(),
-            "-o".to_string(),
-            "./output".to_string(),
-            "--full-mirror".to_string(),
-        ];
-
-        let result = MirrorCommand::try_parse_from(args);
-        assert!(result.is_ok());
-
-        let cmd = result.unwrap();
-        assert_eq!(cmd.url, "https://example.com");
-        assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
-        assert!(cmd.full_mirror);
     }
 
     #[test]
@@ -171,13 +138,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_args_with_ignore_robots() {
+    fn test_parse_args_with_respect_robots() {
         let args = vec![
             "website-mirror".to_string(),
             "https://example.com".to_string(),
             "-o".to_string(),
             "./output".to_string(),
-            "--ignore-robots".to_string(),
+            "--respect-robots".to_string(),
         ];
 
         let result = MirrorCommand::try_parse_from(args);
@@ -186,7 +153,7 @@ mod tests {
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
-        assert!(cmd.ignore_robots);
+        assert!(cmd.respect_robots);
     }
 
     #[test]
@@ -225,21 +192,6 @@ mod tests {
         let args = vec![
             "website-mirror".to_string(),
             "https://example.com".to_string(),
-        ];
-
-        let result = MirrorCommand::try_parse_from(args);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_args_invalid_depth() {
-        let args = vec![
-            "website-mirror".to_string(),
-            "https://example.com".to_string(),
-            "-o".to_string(),
-            "./output".to_string(),
-            "-d".to_string(),
-            "0".to_string(),
         ];
 
         let result = MirrorCommand::try_parse_from(args);

@@ -18,16 +18,16 @@ pub struct MirrorCommand {
     pub output_dir: PathBuf,
 
     /// Maximum depth for crawling (0 = unlimited)
-    #[arg(short = 'd', long, default_value = "3")]
+    #[arg(short = 'd', long, default_value = "0")]
     pub max_depth: usize,
 
     /// Maximum concurrent downloads
-    #[arg(short = 'c', long, default_value = "10")]
+    #[arg(short = 'c', long, default_value = "5")]
     pub max_concurrent: usize,
 
-    /// Ignore robots.txt and download all pages
-    #[arg(short = 'r', long)]
-    pub ignore_robots: bool,
+    /// Respect robots.txt (by default, robots.txt is ignored)
+    #[arg(long)]
+    pub respect_robots: bool,
 
     /// User agent string to use for requests
     #[arg(long, default_value = "WebsiteMirror/1.0")]
@@ -45,10 +45,6 @@ pub struct MirrorCommand {
     /// Timeout for requests in seconds
     #[arg(long, default_value = "30")]
     pub timeout: u64,
-
-    /// Full recursive mirror with all options enabled
-    #[arg(long)]
-    pub full_mirror: bool,
 
     /// Mirror only specific resource types (comma-separated: images,css,js,html)
     /// Examples: --only-resources images,css or --only-resources js
@@ -85,9 +81,9 @@ mod tests {
 
         assert_eq!(args.url, "https://example.com");
         assert_eq!(args.output_dir.to_string_lossy(), "./output");
-        assert_eq!(args.max_depth, 3);
-        assert_eq!(args.max_concurrent, 10);
-        assert_eq!(args.ignore_robots, false);
+        assert_eq!(args.max_depth, 0);
+        assert_eq!(args.max_concurrent, 5);
+        assert_eq!(args.respect_robots, false);
         assert_eq!(args.download_external, false);
         assert_eq!(args.convert_to_webp, false);
     }
@@ -103,7 +99,7 @@ mod tests {
             "5",
             "-c",
             "20",
-            "--ignore-robots",
+            "--respect-robots",
             "--download-external",
             "--convert-to-webp",
         ])
@@ -113,7 +109,7 @@ mod tests {
         assert_eq!(args.output_dir.to_string_lossy(), "./output");
         assert_eq!(args.max_depth, 5);
         assert_eq!(args.max_concurrent, 20);
-        assert_eq!(args.ignore_robots, true);
+        assert_eq!(args.respect_robots, true);
         assert_eq!(args.download_external, true);
         assert_eq!(args.convert_to_webp, true);
     }
@@ -152,23 +148,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_full_mirror() {
-        let args = MirrorCommand::try_parse_from(&[
-            "website-mirror",
-            "https://example.com",
-            "-o",
-            "./output",
-            "--full-mirror",
-        ])
-        .unwrap();
-
-        assert_eq!(args.max_depth, 100);
-        assert_eq!(args.max_concurrent, 50);
-        assert_eq!(args.ignore_robots, true);
-        assert_eq!(args.download_external, true);
-    }
-
-    #[test]
     fn test_parse_missing_url() {
         let result = MirrorCommand::try_parse_from(&["website-mirror", "-o", "./output"]);
         assert!(result.is_err());
@@ -177,19 +156,6 @@ mod tests {
     #[test]
     fn test_parse_missing_output() {
         let result = MirrorCommand::try_parse_from(&["website-mirror", "https://example.com"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_invalid_depth() {
-        let result = MirrorCommand::try_parse_from(&[
-            "website-mirror",
-            "https://example.com",
-            "-o",
-            "./output",
-            "-d",
-            "0",
-        ]);
         assert!(result.is_err());
     }
 

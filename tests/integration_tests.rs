@@ -18,6 +18,7 @@ fn test_basic_mirror_setup() {
         None,
         false,
         true, // no_proxy
+        None, // ignore_patterns
     )
     .unwrap();
 
@@ -112,6 +113,7 @@ fn test_resource_type_filtering() {
         None,
         false,
         true, // no_proxy
+        None, // ignore_patterns
     )
     .unwrap();
 
