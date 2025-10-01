@@ -16,17 +16,20 @@ pub struct Statistics {
     pub urls_discovered: usize,
     pub downloads: HashMap<String, usize>, // resource_type -> success count
     pub errors: HashMap<String, usize>,    // resource_type -> error count
+    pub ignored: HashMap<String, usize>,   // resource_type -> ignored count
     pub bytes_per_type: HashMap<String, u64>, // resource_type -> total bytes
     pub total_bytes: u64,
 }
 
 /// Core state data that gets persisted to disk
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(default)]
 pub struct StateData {
     pub queue: VecDeque<DownloadTask>,
     pub processing: HashSet<String>,
     pub downloaded: HashMap<String, ResourceInfo>,
     pub errored: HashMap<String, ErrorInfo>,
+    pub ignored: HashMap<String, IgnoredInfo>,
 }
 
 /// Information about a successfully downloaded resource
@@ -44,6 +47,15 @@ pub struct ErrorInfo {
     pub error_message: String,
     pub attempted_at: String,
     pub resource_type: String,
+}
+
+/// Information about a URL that was intentionally ignored
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IgnoredInfo {
+    pub reason: String,
+    pub ignored_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<String>,
 }
 
 /// A task in the download queue
@@ -98,9 +110,10 @@ impl PersistentState {
             }
 
             log::info!(
-                "Resuming crawl: {} queued, {} downloaded, {} errors",
+                "Resuming crawl: {} queued, {} downloaded, {} ignored, {} errors",
                 loaded.queue.len(),
                 loaded.downloaded.len(),
+                loaded.ignored.len(),
                 loaded.errored.len()
             );
             loaded
@@ -157,6 +170,7 @@ impl PersistentState {
         // Check if already visited (downloaded or errored) - no separate visited set!
         if data.downloaded.contains_key(&normalized_url)
             || data.errored.contains_key(&normalized_url)
+            || data.ignored.contains_key(&normalized_url)
         {
             return;
         }
@@ -212,6 +226,7 @@ impl PersistentState {
 
         // ATOMIC: Move from processing to downloaded
         data.processing.remove(&normalized_url);
+        data.ignored.remove(&normalized_url);
         data.downloaded.insert(
             normalized_url,
             ResourceInfo {
@@ -234,6 +249,7 @@ impl PersistentState {
 
         // ATOMIC: Move from processing to errored
         data.processing.remove(&normalized_url);
+        data.ignored.remove(&normalized_url);
         data.errored.insert(
             normalized_url,
             ErrorInfo {
@@ -252,12 +268,36 @@ impl PersistentState {
         self.save().ok();
     }
 
+    /// Marks a URL as intentionally ignored (due to user-provided rules)
+    pub fn mark_ignored(&self, url: &str, resource_type: Option<&ResourceType>, reason: &str) {
+        let mut data = self.data.lock().unwrap();
+        let normalized_url = UrlMapper::normalize_root_url(url);
+        data.processing.remove(&normalized_url);
+        data.ignored.insert(
+            normalized_url,
+            IgnoredInfo {
+                reason: reason.to_string(),
+                ignored_at: chrono::Local::now().to_rfc3339(),
+                resource_type: resource_type.map(|rt| format!("{:?}", rt)),
+            },
+        );
+        drop(data);
+
+        if let Some(ref logger) = *self.run_logger.lock().unwrap() {
+            logger.track_ignored();
+        }
+
+        self.save().ok();
+    }
+
     /// Checks if a URL has been visited (downloaded or errored)
     pub fn is_visited(&self, url: &str) -> bool {
         let data = self.data.lock().unwrap();
         let normalized_url = UrlMapper::normalize_root_url(url);
         // No separate visited set - just check downloaded + errored
-        data.downloaded.contains_key(&normalized_url) || data.errored.contains_key(&normalized_url)
+        data.downloaded.contains_key(&normalized_url)
+            || data.errored.contains_key(&normalized_url)
+            || data.ignored.contains_key(&normalized_url)
     }
 
     /// Moves all processing URLs back to the queue (for crash recovery)
@@ -310,6 +350,7 @@ impl PersistentState {
         let mut errors: HashMap<String, usize> = HashMap::new();
         let mut bytes_per_type: HashMap<String, u64> = HashMap::new();
         let mut total_bytes = 0u64;
+        let mut ignored: HashMap<String, usize> = HashMap::new();
 
         // Count successful downloads and bytes
         for info in data.downloaded.values() {
@@ -325,13 +366,25 @@ impl PersistentState {
             *errors.entry(resource_type).or_insert(0) += 1;
         }
 
+        // Count ignored URLs by resource type
+        for ignored_info in data.ignored.values() {
+            let resource_type = ignored_info
+                .resource_type
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string())
+                .to_lowercase();
+            *ignored.entry(resource_type).or_insert(0) += 1;
+        }
+
         Statistics {
             urls_discovered: data.downloaded.len()
                 + data.errored.len()
+                + data.ignored.len()
                 + data.queue.len()
                 + data.processing.len(),
             downloads,
             errors,
+            ignored,
             bytes_per_type,
             total_bytes,
         }
@@ -343,6 +396,15 @@ impl PersistentState {
         data.errored
             .values()
             .map(|err| err.error_message.clone())
+            .collect()
+    }
+
+    /// Get ignored URL entries for summary reporting
+    pub fn get_ignored_entries(&self) -> Vec<(String, IgnoredInfo)> {
+        let data = self.data.lock().unwrap();
+        data.ignored
+            .iter()
+            .map(|(url, info)| (url.clone(), info.clone()))
             .collect()
     }
 
@@ -374,7 +436,11 @@ impl PersistentState {
     /// Gets total count of URLs that have been seen/discovered
     pub fn total_seen_urls(&self) -> usize {
         let data = self.data.lock().unwrap();
-        data.downloaded.len() + data.errored.len() + data.queue.len() + data.processing.len()
+        data.downloaded.len()
+            + data.errored.len()
+            + data.ignored.len()
+            + data.queue.len()
+            + data.processing.len()
     }
 
     /// Clears the state (for testing or reset)

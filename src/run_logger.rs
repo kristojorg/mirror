@@ -9,13 +9,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::persistent_state::PersistentState;
+use crate::persistent_state::{IgnoredInfo, PersistentState};
 
 /// Runtime statistics for the current run only
 #[derive(Debug, Default, Clone)]
 pub struct RunStats {
     pub downloaded: usize, // Files actually downloaded this run
     pub skipped: usize,    // Files skipped (already existed)
+    pub ignored: usize,    // Files ignored by rules this run
     pub errors: usize,     // Errors this run
     pub bytes: u64,        // Bytes downloaded this run
 }
@@ -157,6 +158,12 @@ impl RunLogger {
         stats.skipped += 1;
     }
 
+    /// Track a URL that was ignored due to rules
+    pub fn track_ignored(&self) {
+        let mut stats = self.run_stats.lock().unwrap();
+        stats.ignored += 1;
+    }
+
     /// Track a download error this run
     pub fn track_error(&self) {
         let mut stats = self.run_stats.lock().unwrap();
@@ -188,15 +195,16 @@ impl RunLogger {
                 let total_files: usize = stats.downloads.values().sum();
 
                 format!(
-                        "⏱  {} │ THIS RUN: ⬇️  {} new │ ⏭️  {} skipped │ ❌ {} errors │ 💾 {} │ TOTAL: 📁 {} files │ 💾 {}",
-                        duration,
-                        HumanCount(run.downloaded as u64),
-                        HumanCount(run.skipped as u64),
-                        run.errors,
-                        HumanBytes(run.bytes),
-                        HumanCount(total_files as u64),
-                        HumanBytes(stats.total_bytes)
-                    )
+                    "⏱  {} │ THIS RUN: ⬇️  {} new │ ⏭️  {} skipped │ 🚫 {} ignored │ ❌ {} errors │ 💾 {} │ TOTAL: 📁 {} files │ 💾 {}",
+                    duration,
+                    HumanCount(run.downloaded as u64),
+                    HumanCount(run.skipped as u64),
+                    HumanCount(run.ignored as u64),
+                    run.errors,
+                    HumanBytes(run.bytes),
+                    HumanCount(total_files as u64),
+                    HumanBytes(stats.total_bytes)
+                )
             } else {
                 format!("⏱  {} │ Waiting for persistent state...", duration)
             };
@@ -215,6 +223,7 @@ impl RunLogger {
         // Create summary from persistent state
         let summary = if let Some(ref state) = *self.persistent_state.lock().unwrap() {
             let stats = state.get_statistics();
+            let ignored_entries = state.get_ignored_entries();
 
             // Extract data from the native statistics format
             let pages_crawled = stats.downloads.get("html").copied().unwrap_or(0)
@@ -233,6 +242,7 @@ impl RunLogger {
                 .sum();
             let total_successful: usize = stats.downloads.values().sum();
             let total_failed: usize = stats.errors.values().sum();
+            let total_ignored: usize = stats.ignored.values().sum();
             let error_messages = state.get_error_messages();
 
             RunSummary {
@@ -247,6 +257,8 @@ impl RunLogger {
                 other_files,
                 successful_downloads: total_successful,
                 failed_downloads: total_failed,
+                ignored_urls: total_ignored,
+                ignored_entries,
                 total_bytes: stats.total_bytes,
                 errors: error_messages,
             }
@@ -264,6 +276,8 @@ impl RunLogger {
                 other_files: 0,
                 successful_downloads: 0,
                 failed_downloads: 0,
+                ignored_urls: 0,
+                ignored_entries: Vec::new(),
                 total_bytes: 0,
                 errors: Vec::new(),
             }
@@ -290,6 +304,12 @@ impl RunLogger {
         println!("  JS files: {}", HumanCount(summary.js_files as u64));
         println!("  Images: {}", HumanCount(summary.images as u64));
         println!("  Other: {}", HumanCount(summary.other_files as u64));
+        if summary.ignored_urls > 0 {
+            println!(
+                "  Ignored (rules): {}",
+                HumanCount(summary.ignored_urls as u64)
+            );
+        }
         if summary.failed_downloads > 0 {
             println!(
                 "Failed downloads: {}",
@@ -312,6 +332,9 @@ impl RunLogger {
             "Skipped: {} files (already existed)",
             HumanCount(run_stats.skipped as u64)
         );
+        if run_stats.ignored > 0 {
+            println!("Ignored (rules): {}", HumanCount(run_stats.ignored as u64));
+        }
         if run_stats.errors > 0 {
             println!("Errors: {}", HumanCount(run_stats.errors as u64));
         }
@@ -331,6 +354,7 @@ impl RunLogger {
                  [{}] [INFO]   JS files: {}\n\
                  [{}] [INFO]   Images: {}\n\
                  [{}] [INFO]   Other: {}\n\
+                 [{}] [INFO]   Ignored (rules): {}\n\
                  [{}] [INFO] Failed downloads: {}\n\
                  [{}] [INFO] Total size: {} ({} bytes)\n",
                 timestamp,
@@ -349,6 +373,8 @@ impl RunLogger {
                 timestamp,
                 HumanCount(summary.other_files as u64),
                 timestamp,
+                HumanCount(summary.ignored_urls as u64),
+                timestamp,
                 HumanCount(summary.failed_downloads as u64),
                 timestamp,
                 HumanBytes(summary.total_bytes),
@@ -364,6 +390,7 @@ impl RunLogger {
                  [{}] [INFO] Duration: {}\n\
                  [{}] [INFO] Downloaded: {} files\n\
                  [{}] [INFO] Skipped: {} files (already existed)\n\
+                 [{}] [INFO] Ignored (rules): {}\n\
                  [{}] [INFO] Errors: {}\n\
                  [{}] [INFO] Data downloaded: {} ({} bytes)\n",
                 timestamp,
@@ -375,6 +402,8 @@ impl RunLogger {
                 HumanCount(run_stats.downloaded as u64),
                 timestamp,
                 HumanCount(run_stats.skipped as u64),
+                timestamp,
+                HumanCount(run_stats.ignored as u64),
                 timestamp,
                 HumanCount(run_stats.errors as u64),
                 timestamp,
@@ -390,6 +419,19 @@ impl RunLogger {
                 for error in &summary.errors {
                     let error_msg = format!("[{}] [ERROR]   - {}\n", timestamp, error);
                     let _ = file.write_all(error_msg.as_bytes());
+                }
+            }
+
+            if !summary.ignored_entries.is_empty() {
+                let ignored_msg = format!(
+                    "[{}] [INFO] Ignored URLs: {}\n",
+                    timestamp,
+                    summary.ignored_entries.len()
+                );
+                let _ = file.write_all(ignored_msg.as_bytes());
+                for (url, info) in &summary.ignored_entries {
+                    let detail = format!("[{}] [INFO]   - {} :: {}\n", timestamp, url, info.reason);
+                    let _ = file.write_all(detail.as_bytes());
                 }
             }
 
@@ -427,6 +469,8 @@ pub struct RunSummary {
     pub other_files: usize,
     pub successful_downloads: usize,
     pub failed_downloads: usize,
+    pub ignored_urls: usize,
+    pub ignored_entries: Vec<(String, IgnoredInfo)>,
     pub total_bytes: u64,
     pub errors: Vec<String>,
 }

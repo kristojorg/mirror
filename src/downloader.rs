@@ -380,6 +380,13 @@ impl WebsiteMirror {
                     continue;
                 }
 
+                if self.should_ignore_url(&url) {
+                    log::debug!("Ignored URL: {}", url);
+                    self.state
+                        .mark_ignored(&url, resource_type.as_ref(), "Matched ignore pattern");
+                    continue;
+                }
+
                 let client = self.client.clone();
                 let file_manager = self.file_manager.clone();
                 let state = self.state.clone();
@@ -630,6 +637,11 @@ impl WebsiteMirror {
                     }
                 }
                 if should_skip {
+                    state.mark_ignored(
+                        &resource.resolved,
+                        Some(&resource.resource_type),
+                        "Matched ignore pattern",
+                    );
                     continue;
                 }
             }
