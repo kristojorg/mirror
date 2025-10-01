@@ -76,6 +76,8 @@ pub struct PersistentState {
     current_run_downloads: Arc<Mutex<HashSet<String>>>,
     // Track URLs we've already checked/attempted this run (for skip deduplication)
     current_run_checked: Arc<Mutex<HashSet<String>>>,
+    // Track URLs ignored in current run (not persisted, in-memory only)
+    current_run_ignored: Arc<Mutex<HashSet<String>>>,
     // Optional run logger for tracking current run stats
     run_logger: Arc<Mutex<Option<Arc<RunLogger>>>>,
 }
@@ -127,6 +129,7 @@ impl PersistentState {
             cache_file,
             current_run_downloads: Arc::new(Mutex::new(HashSet::new())),
             current_run_checked: Arc::new(Mutex::new(HashSet::new())),
+            current_run_ignored: Arc::new(Mutex::new(HashSet::new())),
             run_logger: Arc::new(Mutex::new(None)),
         })
     }
@@ -274,7 +277,7 @@ impl PersistentState {
         let normalized_url = UrlMapper::normalize_root_url(url);
         data.processing.remove(&normalized_url);
         data.ignored.insert(
-            normalized_url,
+            normalized_url.clone(),
             IgnoredInfo {
                 reason: reason.to_string(),
                 ignored_at: chrono::Local::now().to_rfc3339(),
@@ -283,9 +286,11 @@ impl PersistentState {
         );
         drop(data);
 
-        if let Some(ref logger) = *self.run_logger.lock().unwrap() {
-            logger.track_ignored();
-        }
+        // Track this URL as ignored in current run
+        self.current_run_ignored
+            .lock()
+            .unwrap()
+            .insert(normalized_url);
 
         self.save().ok();
     }
@@ -484,5 +489,10 @@ impl PersistentState {
     pub fn set_run_logger(&self, logger: Arc<RunLogger>) {
         let mut run_logger = self.run_logger.lock().unwrap();
         *run_logger = Some(logger);
+    }
+
+    /// Gets the count of URLs ignored in the current run
+    pub fn get_current_run_ignored_count(&self) -> usize {
+        self.current_run_ignored.lock().unwrap().len()
     }
 }

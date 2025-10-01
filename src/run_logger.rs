@@ -16,7 +16,6 @@ use crate::persistent_state::{IgnoredInfo, PersistentState};
 pub struct RunStats {
     pub downloaded: usize, // Files actually downloaded this run
     pub skipped: usize,    // Files skipped (already existed)
-    pub ignored: usize,    // Files ignored by rules this run
     pub errors: usize,     // Errors this run
     pub bytes: u64,        // Bytes downloaded this run
 }
@@ -158,12 +157,6 @@ impl RunLogger {
         stats.skipped += 1;
     }
 
-    /// Track a URL that was ignored due to rules
-    pub fn track_ignored(&self) {
-        let mut stats = self.run_stats.lock().unwrap();
-        stats.ignored += 1;
-    }
-
     /// Track a download error this run
     pub fn track_error(&self) {
         let mut stats = self.run_stats.lock().unwrap();
@@ -193,13 +186,14 @@ impl RunLogger {
             let message = if let Some(ref state) = *persistent_state.lock().unwrap() {
                 let stats = state.get_statistics();
                 let total_files: usize = stats.downloads.values().sum();
+                let current_run_ignored = state.get_current_run_ignored_count();
 
                 format!(
                     "⏱  {} │ THIS RUN: ⬇️  {} new │ ⏭️  {} skipped │ 🚫 {} ignored │ ❌ {} errors │ 💾 {} │ TOTAL: 📁 {} files │ 💾 {}",
                     duration,
                     HumanCount(run.downloaded as u64),
                     HumanCount(run.skipped as u64),
-                    HumanCount(run.ignored as u64),
+                    HumanCount(current_run_ignored as u64),
                     run.errors,
                     HumanBytes(run.bytes),
                     HumanCount(total_files as u64),
@@ -291,6 +285,13 @@ impl RunLogger {
         // Get run stats for this session
         let run_stats = self.run_stats.lock().unwrap().clone();
 
+        // Get current run ignored count from persistent state
+        let current_run_ignored = if let Some(ref state) = *self.persistent_state.lock().unwrap() {
+            state.get_current_run_ignored_count()
+        } else {
+            0
+        };
+
         // Print final summary to terminal
         println!("\n========================================");
         println!("Site Summary");
@@ -332,8 +333,8 @@ impl RunLogger {
             "Skipped: {} files (already existed)",
             HumanCount(run_stats.skipped as u64)
         );
-        if run_stats.ignored > 0 {
-            println!("Ignored (rules): {}", HumanCount(run_stats.ignored as u64));
+        if current_run_ignored > 0 {
+            println!("Ignored (rules): {}", HumanCount(current_run_ignored as u64));
         }
         if run_stats.errors > 0 {
             println!("Errors: {}", HumanCount(run_stats.errors as u64));
@@ -403,7 +404,7 @@ impl RunLogger {
                 timestamp,
                 HumanCount(run_stats.skipped as u64),
                 timestamp,
-                HumanCount(run_stats.ignored as u64),
+                HumanCount(current_run_ignored as u64),
                 timestamp,
                 HumanCount(run_stats.errors as u64),
                 timestamp,
