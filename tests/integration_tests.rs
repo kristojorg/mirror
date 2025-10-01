@@ -1,8 +1,10 @@
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
+use url::Url;
+use website_mirror::parser::resolve_url;
 use website_mirror::{
-    DownloadPriority, DownloadTask, FileManager, HtmlParser, ResourceType, WebsiteMirror,
+    CssParser, DownloadPriority, DownloadTask, FileManager, HtmlParser, ResourceType, WebsiteMirror,
 };
 
 #[test]
@@ -42,8 +44,8 @@ fn test_html_parser_integration() {
         </html>
     "#;
 
-    let parser = HtmlParser::new("https://example.com").unwrap();
-    let resources = parser.extract_resources(html_content).unwrap();
+    let parser = HtmlParser::new("https://example.com", html_content).unwrap();
+    let resources = parser.extract_resources().unwrap();
 
     assert_eq!(resources.len(), 4);
 
@@ -206,7 +208,7 @@ fn test_full_mirror_options() {
 
 #[test]
 fn test_path_sanitization() {
-    let parser = HtmlParser::new("https://example.com").unwrap();
+    let parser = HtmlParser::new("https://example.com", "<html></html>").unwrap();
 
     let test_cases = vec![
         ("normal/path", "normal/path"),
@@ -225,7 +227,7 @@ fn test_path_sanitization() {
 
 #[test]
 fn test_url_resolution() {
-    let parser = HtmlParser::new("https://example.com/subdir/").unwrap();
+    let base_url = Url::parse("https://example.com/subdir/").unwrap();
 
     let test_cases = vec![
         ("../style.css", "https://example.com/style.css"),
@@ -245,7 +247,7 @@ fn test_url_resolution() {
     ];
 
     for (input, expected) in test_cases {
-        let result = parser.resolve_url(input).unwrap();
+        let result = resolve_url(&base_url, input).unwrap();
         assert_eq!(result.as_str(), expected, "Failed for input: {}", input);
     }
 }
@@ -260,9 +262,8 @@ fn test_css_background_image_extraction() {
         .bg5 { color: blue; }
     "#;
 
-    let parser = HtmlParser::new("https://example.com").unwrap();
-    let mut resources = Vec::new();
-    parser.extract_background_images_from_css(css_content, &mut resources);
+    let parser = CssParser::new("https://example.com").unwrap();
+    let resources = parser.extract_background_images(css_content);
 
     assert_eq!(resources.len(), 3);
 
@@ -357,10 +358,10 @@ fn test_webp_extension_rewriting_integration() {
     .unwrap();
 
     // Create an HTML parser
-    let html_parser = HtmlParser::new("https://example.com").unwrap();
+    let html_parser = HtmlParser::new("https://example.com", test_html).unwrap();
 
     // Extract resources
-    let resources = html_parser.extract_resources(test_html).unwrap();
+    let resources = html_parser.extract_resources().unwrap();
 
     // Filter to get only image resources
     let image_resources: Vec<_> = resources

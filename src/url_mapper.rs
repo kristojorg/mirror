@@ -1,4 +1,4 @@
-use crate::html_parser::ResourceType;
+use crate::parser::ResourceType;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use url::Url;

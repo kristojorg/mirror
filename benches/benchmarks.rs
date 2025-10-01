@@ -52,7 +52,7 @@ fn bench_path_sanitization(c: &mut Criterion) {
 }
 
 fn bench_url_resolution(c: &mut Criterion) {
-    let parser = HtmlParser::new("https://example.com/subdir/").unwrap();
+    let base_url = url::Url::parse("https://example.com/subdir/").unwrap();
     let test_urls = vec![
         "../style.css",
         "./script.js",
@@ -66,7 +66,7 @@ fn bench_url_resolution(c: &mut Criterion) {
     c.bench_function("resolve_urls", |b| {
         b.iter(|| {
             for url in &test_urls {
-                let _resolved = parser.resolve_url(black_box(url)).unwrap();
+                let _resolved = website_mirror::parser::resolve_url(&base_url, black_box(url)).unwrap();
             }
         });
     });
@@ -91,7 +91,7 @@ fn bench_css_background_extraction(c: &mut Criterion) {
     c.bench_function("extract_css_backgrounds", |b| {
         b.iter(|| {
             let mut resources = Vec::new();
-            parser.extract_background_images_from_css(black_box(css_content), &mut resources, &parser.base_url);
+            parser.extract_background_images_from_css(black_box(css_content), &mut resources);
         });
     });
 }

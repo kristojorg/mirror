@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::downloader::DownloadPriority;
-use crate::html_parser::ResourceType;
+use crate::parser::ResourceType;
 use crate::url_mapper::UrlMapper;
 
 /// Statistics computed from the state data

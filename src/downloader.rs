@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::file_manager::FileManager;
-use crate::html_parser::{HtmlParser, ResourceType};
+use crate::parser::{CssParser, HtmlParser, ResourceType};
 use crate::html_rewriter::HtmlRewriter;
 use crate::persistent_state::{DownloadTask, PersistentState};
 use crate::run_logger::RunLogger;
@@ -68,7 +68,6 @@ pub struct WebsiteMirror {
     pub ignore_patterns: Option<Vec<Regex>>,
     client: Client,
     file_manager: FileManager,
-    html_parser: HtmlParser,
     state: Arc<PersistentState>, // Unified persistent state management
     run_logger: Arc<RunLogger>,  // Runtime logger for tracking this run
 }
@@ -251,7 +250,6 @@ impl WebsiteMirror {
     ) -> Result<Self> {
         let client = Self::build_http_client(no_proxy)?;
         let file_manager = FileManager::new(output_dir)?;
-        let html_parser = HtmlParser::new(base_url)?;
 
         // Compile ignore patterns into regex
         let compiled_patterns = if let Some(patterns) = ignore_patterns {
@@ -297,7 +295,6 @@ impl WebsiteMirror {
             ignore_patterns: compiled_patterns,
             client,
             file_manager,
-            html_parser,
             state,
             run_logger,
         })
@@ -537,12 +534,12 @@ impl WebsiteMirror {
 
         let html_content = String::from_utf8_lossy(&content);
 
-        // Create a new HTML parser with the current page's base URL
-        let page_html_parser = HtmlParser::new(url)?;
+        // Create a new HTML parser with the current page's URL and HTML content
+        let page_html_parser = HtmlParser::new(url, &html_content)?;
         let html_rewriter = HtmlRewriter::new();
 
         // Extract resources from HTML and process them
-        let resources = page_html_parser.extract_resources(&html_content)?;
+        let resources = page_html_parser.extract_resources()?;
         let mut url_mappings = HashMap::new();
 
         // Helper function to check if a resource type should be processed
@@ -826,12 +823,10 @@ impl WebsiteMirror {
 
         // Process CSS files to extract background images
         let css_content = String::from_utf8_lossy(&content);
-        let page_html_parser = HtmlParser::new(url)?;
+        let css_parser = CssParser::new(url)?;
 
         // Extract background images from CSS
-        let mut background_resources = Vec::new();
-        page_html_parser
-            .extract_background_images_from_css(&css_content, &mut background_resources);
+        let background_resources = css_parser.extract_background_images(&css_content);
 
         // Don't log background images - too noisy
 
