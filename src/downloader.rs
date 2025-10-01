@@ -64,7 +64,7 @@ pub struct WebsiteMirror {
     pub download_external: bool,
     pub only_resources: Option<Vec<String>>,
     pub convert_to_webp: bool,
-    pub using_proxy: bool,
+    pub no_proxy: bool,
     pub ignore_patterns: Option<Vec<Regex>>,
     client: Client,
     file_manager: FileManager,
@@ -84,7 +84,7 @@ impl std::fmt::Debug for WebsiteMirror {
             .field("download_external", &self.download_external)
             .field("only_resources", &self.only_resources)
             .field("convert_to_webp", &self.convert_to_webp)
-            .field("using_proxy", &self.using_proxy)
+            .field("no_proxy", &self.no_proxy)
             .field(
                 "ignore_patterns",
                 &self
@@ -252,7 +252,6 @@ impl WebsiteMirror {
         let client = Self::build_http_client(no_proxy)?;
         let file_manager = FileManager::new(output_dir)?;
         let html_parser = HtmlParser::new(base_url)?;
-        let using_proxy = !no_proxy;
 
         // Compile ignore patterns into regex
         let compiled_patterns = if let Some(patterns) = ignore_patterns {
@@ -282,8 +281,11 @@ impl WebsiteMirror {
         // Create persistent state (automatically loads existing state or creates new)
         let state = Arc::new(PersistentState::new(output_dir)?);
 
-        // Set PersistentState for RunLogger (one-way dependency for statistics)
+        // Set PersistentState for RunLogger
         run_logger.set_persistent_state(Arc::clone(&state));
+
+        // Set RunLogger for PersistentState (so mark_errored can track errors)
+        state.set_run_logger(Arc::clone(&run_logger));
 
         Ok(Self {
             base_url: base_url.to_string(),
@@ -294,7 +296,7 @@ impl WebsiteMirror {
             download_external,
             only_resources,
             convert_to_webp,
-            using_proxy,
+            no_proxy,
             ignore_patterns: compiled_patterns,
             client,
             file_manager,
@@ -347,10 +349,10 @@ impl WebsiteMirror {
         }
         log::info!(
             "Proxy: {}",
-            if self.using_proxy {
-                "enabled"
-            } else {
+            if self.no_proxy {
                 "disabled (--no-proxy)"
+            } else {
+                "enabled"
             }
         );
         log::info!("Starting mirror: {}", self.base_url);
