@@ -91,7 +91,7 @@ fn bench_css_background_extraction(c: &mut Criterion) {
     c.bench_function("extract_css_backgrounds", |b| {
         b.iter(|| {
             let mut resources = Vec::new();
-            parser.extract_background_images_from_css(black_box(css_content), &mut resources);
+            parser.extract_background_images_from_css(black_box(css_content), &mut resources, &parser.base_url);
         });
     });
 }
