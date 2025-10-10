@@ -51,10 +51,6 @@ pub struct MirrorCommand {
     #[arg(long, value_delimiter = ',')]
     pub only_resources: Option<Vec<String>>,
 
-    /// Convert JPEG/PNG images to WebP format for better compression
-    #[arg(long)]
-    pub convert_to_webp: bool,
-
     /// Disable the use of the proxy server
     #[arg(long)]
     pub no_proxy: bool,
@@ -85,7 +81,6 @@ mod tests {
         assert_eq!(args.max_concurrent, 5);
         assert_eq!(args.respect_robots, false);
         assert_eq!(args.download_external, false);
-        assert_eq!(args.convert_to_webp, false);
     }
 
     #[test]
@@ -101,7 +96,6 @@ mod tests {
             "20",
             "--respect-robots",
             "--download-external",
-            "--convert-to-webp",
         ])
         .unwrap();
 
@@ -111,7 +105,6 @@ mod tests {
         assert_eq!(args.max_concurrent, 20);
         assert_eq!(args.respect_robots, true);
         assert_eq!(args.download_external, true);
-        assert_eq!(args.convert_to_webp, true);
     }
 
     #[test]

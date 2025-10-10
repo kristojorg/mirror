@@ -167,7 +167,7 @@ mod tests {
         );
         mappings.insert(
             "https://example.com/image.jpg".to_string(),
-            "example.com/image.webp".to_string(),
+            "example.com/image.jpg".to_string(),
         );
         mappings.insert(
             "https://example.com/page.html".to_string(),
@@ -178,7 +178,7 @@ mod tests {
 
         assert!(result.contains(r#"href="example.com/style.css""#));
         assert!(result.contains(r#"src="example.com/script.js""#));
-        assert!(result.contains(r#"src="example.com/image.webp""#));
+        assert!(result.contains(r#"src="example.com/image.jpg""#));
         assert!(result.contains(r#"href="example.com/page.html""#));
     }
 
@@ -190,11 +190,11 @@ mod tests {
         let mut mappings = HashMap::new();
         mappings.insert(
             "https://example.com/image.jpg".to_string(),
-            "example.com/image.webp".to_string(),
+            "example.com/image.jpg".to_string(),
         );
 
         let result = rewriter.rewrite_urls(html, &mappings);
-        assert!(result.contains(r#"src='example.com/image.webp'"#));
+        assert!(result.contains(r#"src='example.com/image.jpg'"#));
     }
 
     #[test]
@@ -205,11 +205,11 @@ mod tests {
         let mut mappings = HashMap::new();
         mappings.insert(
             "https://example.com/bg.jpg".to_string(),
-            "example.com/bg.webp".to_string(),
+            "example.com/bg.jpg".to_string(),
         );
 
         let result = rewriter.rewrite_urls(html, &mappings);
-        assert!(result.contains("url(example.com/bg.webp)"));
+        assert!(result.contains("url(example.com/bg.jpg)"));
     }
 
     #[test]
@@ -220,11 +220,11 @@ mod tests {
         let mut mappings = HashMap::new();
         mappings.insert(
             "https://example.com/bg.jpg".to_string(),
-            "example.com/bg.webp".to_string(),
+            "example.com/bg.jpg".to_string(),
         );
 
         let result = rewriter.rewrite_urls(html, &mappings);
-        assert!(result.contains("url('example.com/bg.webp')"));
+        assert!(result.contains("url('example.com/bg.jpg')"));
     }
 
     #[test]
@@ -235,11 +235,11 @@ mod tests {
         let mut mappings = HashMap::new();
         mappings.insert(
             "https://example.com/lazy.jpg".to_string(),
-            "example.com/lazy.webp".to_string(),
+            "example.com/lazy.jpg".to_string(),
         );
 
         let result = rewriter.rewrite_urls(html, &mappings);
-        assert!(result.contains(r#"data-src="example.com/lazy.webp""#));
+        assert!(result.contains(r#"data-src="example.com/lazy.jpg""#));
     }
 
     #[test]

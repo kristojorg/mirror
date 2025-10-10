@@ -19,7 +19,6 @@ cargo test
 
 # Run specific test file
 cargo test integration_tests
-cargo test webp_extension_tests
 
 # Run with verbose output
 cargo test -- --nocapture
@@ -65,7 +64,7 @@ cargo update
 - **`cli.rs`** - Command-line interface using clap with comprehensive options
 - **`downloader.rs`** - Core mirroring engine with HTTP client, concurrent downloads, and caching
 - **`html_parser.rs`** - HTML parsing and resource extraction using html5ever
-- **`file_manager.rs`** - File system operations, directory management, and WebP conversion
+- **`file_manager.rs`** - File system operations, directory management
 - **`lib.rs`** - Module exports and public API
 - **`persistent_state.rs`** (planned) - Persistent crawl state management for reliable resumption
 - **`mirror_state.rs`** (to be replaced) - Current state tracking, will be replaced by persistent_state.rs
@@ -86,7 +85,6 @@ cargo update
 3. **FileManager** (`file_manager.rs`) - Manages file operations:
    - Creates directory structures
    - Saves downloaded content with proper extensions
-   - Converts images to WebP when requested
    - Updates HTML content with local resource paths
 
 ### Resource Processing Flow
@@ -150,7 +148,6 @@ This eliminates all the complex resumption logic and provides true fault toleran
 
 - **Unit tests**: Embedded in each module using `#[cfg(test)]`
 - **Integration tests**: Full workflow testing in `tests/integration_tests.rs`
-- **WebP tests**: Specific testing for image conversion in `tests/webp_extension_tests.rs`
 - **Benchmarks**: Performance testing in `benches/` directory
 
 ## Key Features
@@ -158,7 +155,6 @@ This eliminates all the complex resumption logic and provides true fault toleran
 ### CLI Options
 - `--full-mirror`: Unlimited depth crawling with all external resources
 - `--only-resources [types]`: Filter to specific resource types (images, css, js, html)
-- `--convert-to-webp`: Convert JPEG/PNG to WebP for better compression
 - `--ignore-robots`: Bypass robots.txt restrictions
 
 ### Technical Capabilities
@@ -182,7 +178,6 @@ This eliminates all the complex resumption logic and provides true fault toleran
 ### Utility Dependencies
 - **pathdiff**: Relative path calculation for HTML resource links
 - **mime_guess**: MIME type detection for downloaded files
-- **image + webp**: Image format conversion capabilities
 - **indicatif + console + colored**: Progress bars and terminal output
 
 ## Common Development Tasks

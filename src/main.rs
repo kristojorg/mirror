@@ -20,7 +20,6 @@ async fn main() -> Result<()> {
         !args.respect_robots, // ignore_robots is the inverse of respect_robots
         true,                 // download_external is always true to ensure no 404s
         args.only_resources.clone(),
-        args.convert_to_webp,
         args.no_proxy,
         args.ignore_patterns.clone(),
     )?;
@@ -70,25 +69,6 @@ mod tests {
         let cmd = result.unwrap();
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
-    }
-
-    #[test]
-    fn test_parse_args_with_convert_to_webp() {
-        let args = vec![
-            "website-mirror".to_string(),
-            "https://example.com".to_string(),
-            "-o".to_string(),
-            "./output".to_string(),
-            "--convert-to-webp".to_string(),
-        ];
-
-        let result = MirrorCommand::try_parse_from(args);
-        assert!(result.is_ok());
-
-        let cmd = result.unwrap();
-        assert_eq!(cmd.url, "https://example.com");
-        assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
-        assert!(cmd.convert_to_webp);
     }
 
     #[test]

@@ -8,13 +8,11 @@ use url::Url;
 /// This module is responsible for converting absolute URLs to local file paths,
 /// handling different resource types and applying transformations like WebP conversion.
 #[derive(Debug, Clone)]
-pub struct UrlMapper {
-    convert_to_webp: bool,
-}
+pub struct UrlMapper;
 
 impl UrlMapper {
-    pub fn new(convert_to_webp: bool) -> Result<Self> {
-        Ok(Self { convert_to_webp })
+    pub fn new() -> Result<Self> {
+        Ok(Self)
     }
 
     /// Normalize root URL for consistent duplicate checking
@@ -125,19 +123,7 @@ impl UrlMapper {
 
     /// Convert image URLs to paths (handles WebP conversion)
     fn image_url_to_path(&self, url: &Url) -> Result<PathBuf> {
-        let mut path = self.build_base_path(url)?;
-
-        // Handle WebP conversion if enabled
-        if self.convert_to_webp {
-            if let Some(ext) = path.extension() {
-                let ext_str = ext.to_string_lossy().to_lowercase();
-                if matches!(ext_str.as_str(), "jpg" | "jpeg" | "png") {
-                    path.set_extension("webp");
-                }
-            }
-        }
-
-        Ok(path)
+        self.build_base_path(url)
     }
 
     /// Convert generic URLs to paths (preserves extension if present)
@@ -230,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_html_url_to_path() {
-        let mapper = UrlMapper::new(false).unwrap();
+        let mapper = UrlMapper::new().unwrap();
 
         // Test root URL
         let path = mapper
@@ -258,31 +244,8 @@ mod tests {
     }
 
     #[test]
-    fn test_image_url_to_path_with_webp() {
-        let mapper = UrlMapper::new(true).unwrap();
-
-        // Test JPEG conversion
-        let path = mapper
-            .url_to_local_path("https://example.com/photo.jpg", &ResourceType::Image)
-            .unwrap();
-        assert!(path.ends_with("example.com/photo.webp"));
-
-        // Test PNG conversion
-        let path = mapper
-            .url_to_local_path("https://example.com/logo.png", &ResourceType::Image)
-            .unwrap();
-        assert!(path.ends_with("example.com/logo.webp"));
-
-        // Test GIF (no conversion)
-        let path = mapper
-            .url_to_local_path("https://example.com/anim.gif", &ResourceType::Image)
-            .unwrap();
-        assert!(path.ends_with("example.com/anim.gif"));
-    }
-
-    #[test]
     fn test_css_url_to_path() {
-        let mapper = UrlMapper::new(false).unwrap();
+        let mapper = UrlMapper::new().unwrap();
 
         // Test CSS with extension
         let path = mapper
@@ -299,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_query_parameter_handling() {
-        let mapper = UrlMapper::new(false).unwrap();
+        let mapper = UrlMapper::new().unwrap();
 
         // Now using -- as separator
         let path = mapper
@@ -328,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_path_segment() {
-        let mapper = UrlMapper::new(false).unwrap();
+        let mapper = UrlMapper::new().unwrap();
 
         assert_eq!(
             mapper.sanitize_path_segment("normal-file.txt"),

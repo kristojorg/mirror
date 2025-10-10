@@ -18,7 +18,6 @@ fn test_basic_mirror_setup() {
         false,
         false,
         None,
-        false,
         true, // no_proxy
         None, // ignore_patterns
     )
@@ -113,7 +112,6 @@ fn test_resource_type_filtering() {
         false,
         false,
         None,
-        false,
         true, // no_proxy
         None, // ignore_patterns
     )
@@ -133,7 +131,6 @@ fn test_resource_type_filtering() {
         false,
         false,
         Some(vec!["images".to_string()]),
-        false,
         true, // no_proxy
     )
     .unwrap();
@@ -152,7 +149,6 @@ fn test_resource_type_filtering() {
         false,
         false,
         Some(vec!["css".to_string(), "js".to_string()]),
-        false,
         true, // no_proxy
     )
     .unwrap();
@@ -161,26 +157,6 @@ fn test_resource_type_filtering() {
     assert!(mirror.should_process_resource_type(&ResourceType::JavaScript));
     assert!(!mirror.should_process_resource_type(&ResourceType::Image));
     assert!(!mirror.should_process_resource_type(&ResourceType::Link));
-}
-
-#[test]
-fn test_webp_conversion_flag() {
-    let temp_dir = tempdir().unwrap();
-
-    let mirror = WebsiteMirror::new(
-        "https://example.com",
-        temp_dir.path(),
-        3,
-        10,
-        false,
-        false,
-        None,
-        true,
-        true, // no_proxy
-    )
-    .unwrap();
-
-    assert!(mirror.convert_to_webp);
 }
 
 #[test]
@@ -195,7 +171,6 @@ fn test_full_mirror_options() {
         true, // ignore_robots
         true, // download_external
         None,
-        false,
         true, // no_proxy
     )
     .unwrap();
@@ -327,84 +302,4 @@ fn test_download_task_priority_queue() {
     assert_eq!(fourth.priority, DownloadPriority::Normal);
 }
 
-/// Test that WebP extension rewriting works correctly in the actual download process
-#[test]
-fn test_webp_extension_rewriting_integration() {
-    let temp_dir = tempdir().unwrap();
 
-    // Create a test HTML file with image references
-    let test_html = r#"
-        <!DOCTYPE html>
-        <html>
-        <body>
-            <img src="https://example.com/test-image.jpg" alt="Test Image">
-            <img src="https://example.com/another-image.png" alt="Another Image">
-        </body>
-        </html>
-    "#;
-
-    // Create a WebsiteMirror instance with WebP conversion enabled
-    let mirror = WebsiteMirror::new(
-        "https://example.com",
-        temp_dir.path(),
-        3,
-        10,
-        false,
-        false,
-        None,
-        true, // Enable WebP conversion
-        true, // no_proxy
-    )
-    .unwrap();
-
-    // Create an HTML parser
-    let html_parser = HtmlParser::new("https://example.com", test_html).unwrap();
-
-    // Extract resources
-    let resources = html_parser.extract_resources().unwrap();
-
-    // Filter to get only image resources
-    let image_resources: Vec<_> = resources
-        .iter()
-        .filter(|r| r.resource_type == ResourceType::Image)
-        .collect();
-
-    assert_eq!(image_resources.len(), 2, "Should find 2 image resources");
-
-    // Test that the mirror correctly identifies which resources should be processed
-    for resource in &image_resources {
-        assert!(
-            mirror.should_process_resource_type(&resource.resource_type),
-            "Image resource {} should be processed",
-            resource.original_url
-        );
-    }
-
-    // Test that local paths are correctly generated with WebP extensions
-    for resource in &image_resources {
-        let local_path = WebsiteMirror::get_local_path_for_resource_static(
-            &html_parser,
-            &resource.original_url,
-            true, // convert_to_webp = true
-            "index.html",
-        )
-        .unwrap();
-
-        // Verify WebP extension conversion
-        if resource.original_url.ends_with(".jpg") {
-            assert!(
-                local_path.ends_with(".webp"),
-                "JPG image {} should be converted to .webp, got: {}",
-                resource.original_url,
-                local_path
-            );
-        } else if resource.original_url.ends_with(".png") {
-            assert!(
-                local_path.ends_with(".webp"),
-                "PNG image {} should be converted to .webp, got: {}",
-                resource.original_url,
-                local_path
-            );
-        }
-    }
-}

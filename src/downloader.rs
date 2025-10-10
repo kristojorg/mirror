@@ -12,7 +12,6 @@ use crate::html_rewriter::HtmlRewriter;
 use crate::persistent_state::{DownloadTask, PersistentState};
 use crate::run_logger::RunLogger;
 use crate::url_mapper::UrlMapper;
-use webp::Encoder;
 
 /// Result of processing a URL
 #[derive(Debug, Clone)]
@@ -63,7 +62,6 @@ pub struct WebsiteMirror {
     pub ignore_robots: bool,
     pub download_external: bool,
     pub only_resources: Option<Vec<String>>,
-    pub convert_to_webp: bool,
     pub no_proxy: bool,
     pub ignore_patterns: Option<Vec<Regex>>,
     client: Client,
@@ -82,7 +80,6 @@ impl std::fmt::Debug for WebsiteMirror {
             .field("ignore_robots", &self.ignore_robots)
             .field("download_external", &self.download_external)
             .field("only_resources", &self.only_resources)
-            .field("convert_to_webp", &self.convert_to_webp)
             .field("no_proxy", &self.no_proxy)
             .field(
                 "ignore_patterns",
@@ -111,99 +108,6 @@ impl WebsiteMirror {
             Some(relative) => relative.to_string_lossy().to_string(),
             None => to_path.to_string(), // Fallback to absolute path
         }
-    }
-
-    /// Perform comprehensive WebP extension replacement for any remaining image references
-    pub fn perform_comprehensive_webp_replacement(html_content: &str) -> String {
-        let mut updated_content = html_content.to_string();
-
-        // First, do simple string replacements for all image extensions
-        // This catches most cases including those in JavaScript, CSS, and HTML
-        // Use a two-pass approach to avoid double-converting already .webp files
-
-        // Pass 1: Mark already-converted .webp files with a temporary marker
-        updated_content = updated_content.replace(".webp", "___WEBP_MARKER___");
-
-        // Pass 2: Convert remaining image extensions to .webp
-        let simple_replacements = vec![
-            (".jpg", ".webp"),
-            (".jpeg", ".webp"),
-            (".png", ".webp"),
-            (".JPG", ".webp"),
-            (".JPEG", ".webp"),
-            (".PNG", ".webp"),
-        ];
-
-        for (old_ext, new_ext) in simple_replacements {
-            updated_content = updated_content.replace(old_ext, new_ext);
-        }
-
-        // Pass 3: Restore the original .webp files
-        updated_content = updated_content.replace("___WEBP_MARKER___", ".webp");
-
-        // Then use regex patterns for more specific cases that might have been missed
-        // These patterns will now work correctly since we've already handled the double-conversion issue
-        let patterns = vec![
-            // URLs in quotes that might have been missed
-            (
-                r#"url\(["']?([^"']*\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["']?\)"#,
-                r#"url($1.webp)"#,
-            ),
-            // Src attributes that might have been missed
-            (
-                r#"src=["']([^"']*\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["']"#,
-                r#"src="$1.webp""#,
-            ),
-            // Background image URLs that might have been missed
-            (
-                r#"background-image:\s*url\(["']?([^"']*\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["']?\)"#,
-                r#"background-image: url($1.webp)"#,
-            ),
-        ];
-
-        for (pattern, replacement) in patterns {
-            let regex = regex::Regex::new(pattern).unwrap();
-            updated_content = regex.replace_all(&updated_content, replacement).to_string();
-        }
-
-        updated_content
-    }
-
-    /// Static version for use in functions without self access
-    fn convert_to_webp_static(image_data: &[u8], original_url: &str) -> Result<Vec<u8>> {
-        // Decode the image
-        let img = match image::load_from_memory(image_data) {
-            Ok(img) => img,
-            Err(e) => {
-                log::warn!(
-                    "Failed to decode image for WebP conversion: {} - {}",
-                    original_url,
-                    e
-                );
-                return Ok(image_data.to_vec()); // Return original data if conversion fails
-            }
-        };
-
-        // Convert to RGB8 if needed (WebP encoder expects RGB)
-        let rgb_img = img.to_rgb8();
-
-        // Create WebP encoder with good quality (80/100)
-        let encoder = Encoder::from_rgb(&rgb_img, rgb_img.width(), rgb_img.height());
-
-        // Encode with quality 80 (good balance between size and quality)
-        let webp_data = encoder.encode(80.0);
-
-        let original_size = image_data.len();
-        let webp_size = webp_data.len();
-        let compression_ratio = (original_size as f64 / webp_size as f64 * 100.0) as u32;
-
-        log::info!(
-            "Converted to WebP: {} ({}% of original)",
-            original_url,
-            compression_ratio
-        );
-
-        Ok(webp_data.to_vec())
     }
 
     /// Check if a URL should be ignored based on ignore patterns
@@ -244,7 +148,6 @@ impl WebsiteMirror {
         ignore_robots: bool,
         download_external: bool,
         only_resources: Option<Vec<String>>,
-        convert_to_webp: bool,
         no_proxy: bool,
         ignore_patterns: Option<Vec<String>>,
     ) -> Result<Self> {
@@ -290,7 +193,6 @@ impl WebsiteMirror {
             ignore_robots,
             download_external,
             only_resources,
-            convert_to_webp,
             no_proxy,
             ignore_patterns: compiled_patterns,
             client,
@@ -421,7 +323,6 @@ impl WebsiteMirror {
                     &base_url,
                     priority,
                     resource_type,
-                    self.convert_to_webp,
                     &run_logger,
                     &ignore_patterns,
                     source_url,
@@ -475,7 +376,6 @@ impl WebsiteMirror {
         depth: usize,
         state: &Arc<PersistentState>,
         base_url: &str,
-        convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
         ignore_patterns: &Option<Vec<Regex>>,
         source_url: Option<String>,
@@ -603,14 +503,8 @@ impl WebsiteMirror {
         // 2. Remove base tags
         html_content_updated = html_rewriter.remove_base_tags(&html_content_updated, &base_tag_htmls);
 
-        // Additional comprehensive WebP extension replacement for any remaining image references
-        if convert_to_webp {
-            html_content_updated =
-                Self::perform_comprehensive_webp_replacement(&html_content_updated);
-        }
-
         // Save the updated HTML
-        let url_mapper = UrlMapper::new(convert_to_webp)?;
+        let url_mapper = UrlMapper::new()?;
         let local_html_path = url_mapper.url_to_local_path(url, &ResourceType::Link)?;
         let _saved_path =
             file_manager.save_file(&local_html_path, html_content_updated.as_bytes())?;
@@ -640,7 +534,6 @@ impl WebsiteMirror {
         file_manager: &FileManager,
         url: &str,
         state: &Arc<PersistentState>,
-        convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
         source_url: Option<String>,
     ) -> Result<ProcessResult> {
@@ -717,7 +610,7 @@ impl WebsiteMirror {
 
         // Download background images with normal priority (after CSS/JS)
         for resource in &background_resources {
-            let url_mapper = UrlMapper::new(convert_to_webp)?;
+            let url_mapper = UrlMapper::new()?;
             if let Err(_e) = Self::download_resource(
                 client,
                 file_manager,
@@ -725,7 +618,6 @@ impl WebsiteMirror {
                 &resource.resolved,
                 &ResourceType::Image,
                 state,
-                convert_to_webp,
                 run_logger,
                 Some(url.to_string()), // Found in current CSS file
             )
@@ -736,7 +628,7 @@ impl WebsiteMirror {
         }
 
         // Save the CSS file
-        let url_mapper = UrlMapper::new(convert_to_webp)?;
+        let url_mapper = UrlMapper::new()?;
         let local_path = url_mapper.url_to_local_path(url, &ResourceType::CSS)?;
         let _saved_path = file_manager.save_file(&local_path, &content)?;
 
@@ -769,7 +661,6 @@ impl WebsiteMirror {
         base_url: &str,
         priority: DownloadPriority,
         resource_type: Option<ResourceType>,
-        convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
         ignore_patterns: &Option<Vec<Regex>>,
         source_url: Option<String>,
@@ -796,7 +687,6 @@ impl WebsiteMirror {
                     depth,
                     state,
                     base_url,
-                    convert_to_webp,
                     run_logger,
                     ignore_patterns,
                     source_url.clone(),
@@ -810,7 +700,6 @@ impl WebsiteMirror {
                     file_manager,
                     url,
                     state,
-                    convert_to_webp,
                     run_logger,
                     source_url.clone(),
                 )
@@ -819,7 +708,7 @@ impl WebsiteMirror {
             Some(resource_type) => {
                 // Other resources (JS, images, etc.) - just download without processing
                 log::debug!("📦 Processing resource: {}", url);
-                let url_mapper = UrlMapper::new(convert_to_webp)?;
+                let url_mapper = UrlMapper::new()?;
                 Self::download_resource(
                     client,
                     file_manager,
@@ -827,7 +716,6 @@ impl WebsiteMirror {
                     url,
                     &resource_type,
                     state,
-                    convert_to_webp,
                     run_logger,
                     source_url, // Pass through from task
                 )
@@ -845,7 +733,6 @@ impl WebsiteMirror {
         url: &str,
         resource_type: &ResourceType,
         state: &Arc<PersistentState>,
-        convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
         source_url: Option<String>,
     ) -> Result<ProcessResult> {
@@ -944,25 +831,8 @@ impl WebsiteMirror {
             }
         };
 
-        // Convert images to WebP if they're JPEG or PNG and the flag is enabled
-        let final_content = if convert_to_webp
-            && matches!(resource_type, ResourceType::Image)
-            && (url.ends_with(".jpg")
-                || url.ends_with(".jpeg")
-                || url.ends_with(".png")
-                || url.ends_with(".JPG")
-                || url.ends_with(".JPEG")
-                || url.ends_with(".PNG"))
-        {
-            // Convert to WebP
-            Self::convert_to_webp_static(&content, url)?
-        } else {
-            // Keep original content
-            content.to_vec()
-        };
+        let final_content = content.to_vec();
 
-        // Note: The local_path already has the correct extension (.webp if convert_to_webp is true)
-        // because UrlMapper handles the conversion logic
         let _saved_path = match file_manager.save_file(&local_path, &final_content) {
             Ok(path) => path,
             Err(e) => {
@@ -1018,7 +888,6 @@ mod tests {
             false,
             false,
             None,
-            false,
             true, // no_proxy
             None, // ignore_patterns
         )
@@ -1029,7 +898,6 @@ mod tests {
         assert_eq!(mirror.max_concurrent, 10);
         assert_eq!(mirror.ignore_robots, false);
         assert_eq!(mirror.download_external, false);
-        assert_eq!(mirror.convert_to_webp, false);
     }
 
     #[test]
@@ -1043,7 +911,6 @@ mod tests {
             true,
             true,
             Some(vec!["images".to_string()]),
-            true,
             false, // no_proxy
             None,  // ignore_patterns
         )
@@ -1053,7 +920,6 @@ mod tests {
         assert_eq!(mirror.max_concurrent, 20);
         assert_eq!(mirror.ignore_robots, true);
         assert_eq!(mirror.download_external, true);
-        assert_eq!(mirror.convert_to_webp, true);
         assert_eq!(mirror.only_resources, Some(vec!["images".to_string()]));
     }
 
@@ -1068,7 +934,6 @@ mod tests {
             false,
             false,
             None,
-            false,
             true, // no_proxy
             None, // ignore_patterns
         )
@@ -1089,7 +954,6 @@ mod tests {
             false,
             false,
             Some(vec!["images".to_string(), "css".to_string()]),
-            false,
             true, // no_proxy
             None, // ignore_patterns
         )
@@ -1099,36 +963,6 @@ mod tests {
         assert!(!mirror.should_process_resource_type(&ResourceType::JavaScript));
         assert!(mirror.should_process_resource_type(&ResourceType::Image));
         assert!(!mirror.should_process_resource_type(&ResourceType::Link));
-    }
-
-    #[test]
-    fn test_convert_to_webp_success() {
-        // Create a simple test image (1x1 pixel PNG)
-        let png_data = vec![
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
-            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
-            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
-            0x99, 0x01, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01,
-            0xE2, 0x21, 0xBC, 0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42,
-            0x60, 0x82,
-        ];
-
-        let result = WebsiteMirror::convert_to_webp_static(&png_data, "test.png");
-        assert!(result.is_ok());
-
-        let webp_data = result.unwrap();
-        assert!(webp_data.len() > 0);
-        assert!(webp_data.len() != png_data.len()); // Should be different size
-    }
-
-    #[test]
-    fn test_convert_to_webp_invalid_image() {
-        let invalid_data = b"not an image";
-        let result = WebsiteMirror::convert_to_webp_static(invalid_data, "test.txt");
-        assert!(result.is_ok()); // Should return original data on failure
-
-        let returned_data = result.unwrap();
-        assert_eq!(returned_data, invalid_data);
     }
 
     #[test]
@@ -1257,7 +1091,6 @@ mod tests {
             false,
             false,
             None,
-            false,
             true, // no_proxy
             None, // ignore_patterns
         )
@@ -1269,7 +1102,6 @@ mod tests {
         assert_eq!(mirror.max_concurrent, cloned.max_concurrent);
         assert_eq!(mirror.ignore_robots, cloned.ignore_robots);
         assert_eq!(mirror.download_external, cloned.download_external);
-        assert_eq!(mirror.convert_to_webp, cloned.convert_to_webp);
     }
 
     // Note: WebsiteMirror doesn't implement PartialEq, Eq, or Hash due to complex fields
