@@ -7,7 +7,7 @@
       "Bash(cargo test:*)",
       "Bash(cargo check:*)",
       "Bash(cargo doc:*)",
-      "Bash(rustc:*)",
+      "Bash(rustc:*)"
     ],
     "deny": [],
     "ask": []
