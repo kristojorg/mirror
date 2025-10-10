@@ -21,10 +21,6 @@ pub struct MirrorCommand {
     #[arg(short = 'd', long, default_value = "0")]
     pub max_depth: usize,
 
-    /// Maximum concurrent downloads
-    #[arg(short = 'c', long, default_value = "5")]
-    pub max_concurrent: usize,
-
     /// Respect robots.txt (by default, robots.txt is ignored)
     #[arg(long)]
     pub respect_robots: bool,
@@ -78,7 +74,6 @@ mod tests {
         assert_eq!(args.url, "https://example.com");
         assert_eq!(args.output_dir.to_string_lossy(), "./output");
         assert_eq!(args.max_depth, 0);
-        assert_eq!(args.max_concurrent, 5);
         assert_eq!(args.respect_robots, false);
         assert_eq!(args.download_external, false);
     }
@@ -92,8 +87,6 @@ mod tests {
             "./output",
             "-d",
             "5",
-            "-c",
-            "20",
             "--respect-robots",
             "--download-external",
         ])
@@ -102,7 +95,6 @@ mod tests {
         assert_eq!(args.url, "https://example.com");
         assert_eq!(args.output_dir.to_string_lossy(), "./output");
         assert_eq!(args.max_depth, 5);
-        assert_eq!(args.max_concurrent, 20);
         assert_eq!(args.respect_robots, true);
         assert_eq!(args.download_external, true);
     }
@@ -149,19 +141,6 @@ mod tests {
     #[test]
     fn test_parse_missing_output() {
         let result = MirrorCommand::try_parse_from(&["website-mirror", "https://example.com"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_invalid_concurrent() {
-        let result = MirrorCommand::try_parse_from(&[
-            "website-mirror",
-            "https://example.com",
-            "-o",
-            "./output",
-            "-c",
-            "0",
-        ]);
         assert!(result.is_err());
     }
 }

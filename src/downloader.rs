@@ -58,7 +58,6 @@ pub struct WebsiteMirror {
     pub base_url: String,
     pub output_dir: PathBuf,
     pub max_depth: usize,
-    pub max_concurrent: usize,
     pub ignore_robots: bool,
     pub download_external: bool,
     pub only_resources: Option<Vec<String>>,
@@ -76,7 +75,6 @@ impl std::fmt::Debug for WebsiteMirror {
             .field("base_url", &self.base_url)
             .field("output_dir", &self.output_dir)
             .field("max_depth", &self.max_depth)
-            .field("max_concurrent", &self.max_concurrent)
             .field("ignore_robots", &self.ignore_robots)
             .field("download_external", &self.download_external)
             .field("only_resources", &self.only_resources)
@@ -144,7 +142,6 @@ impl WebsiteMirror {
         base_url: &str,
         output_dir: &Path,
         max_depth: usize,
-        max_concurrent: usize,
         ignore_robots: bool,
         download_external: bool,
         only_resources: Option<Vec<String>>,
@@ -189,7 +186,6 @@ impl WebsiteMirror {
             base_url: base_url.to_string(),
             output_dir: output_dir.to_path_buf(),
             max_depth,
-            max_concurrent,
             ignore_robots,
             download_external,
             only_resources,
@@ -253,11 +249,7 @@ impl WebsiteMirror {
         );
         log::info!("Starting mirror: {}", self.base_url);
         log::info!("Output: {:?}", self.output_dir);
-        log::info!(
-            "Max depth: {} | Max concurrent: {}",
-            self.max_depth,
-            self.max_concurrent
-        );
+        log::info!("Max depth: {}", self.max_depth);
 
         // Add the base URL to the download queue with high priority (HTML page)
         // Only add HTML pages if we're not filtering to specific resource types
@@ -884,7 +876,6 @@ mod tests {
             "https://example.com",
             temp_dir.path(),
             3,
-            10,
             false,
             false,
             None,
@@ -895,7 +886,6 @@ mod tests {
 
         assert_eq!(mirror.base_url.as_str(), "https://example.com");
         assert_eq!(mirror.max_depth, 3);
-        assert_eq!(mirror.max_concurrent, 10);
         assert_eq!(mirror.ignore_robots, false);
         assert_eq!(mirror.download_external, false);
     }
@@ -907,7 +897,6 @@ mod tests {
             "https://example.com",
             temp_dir.path(),
             5,
-            20,
             true,
             true,
             Some(vec!["images".to_string()]),
@@ -917,7 +906,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(mirror.max_depth, 5);
-        assert_eq!(mirror.max_concurrent, 20);
         assert_eq!(mirror.ignore_robots, true);
         assert_eq!(mirror.download_external, true);
         assert_eq!(mirror.only_resources, Some(vec!["images".to_string()]));
@@ -930,7 +918,6 @@ mod tests {
             "https://example.com",
             temp_dir.path(),
             3,
-            10,
             false,
             false,
             None,
@@ -950,7 +937,6 @@ mod tests {
             "https://example.com",
             temp_dir.path(),
             3,
-            10,
             false,
             false,
             Some(vec!["images".to_string(), "css".to_string()]),
@@ -1065,11 +1051,9 @@ mod tests {
             "https://example.com",
             temp_dir.path(),
             3,
-            10,
             false,
             false,
             None,
-            false,
             true, // no_proxy
             None, // ignore_patterns
         )
@@ -1087,7 +1071,6 @@ mod tests {
             "https://example.com",
             temp_dir.path(),
             3,
-            10,
             false,
             false,
             None,
@@ -1099,7 +1082,6 @@ mod tests {
         let cloned = mirror.clone();
         assert_eq!(mirror.base_url, cloned.base_url);
         assert_eq!(mirror.max_depth, cloned.max_depth);
-        assert_eq!(mirror.max_concurrent, cloned.max_concurrent);
         assert_eq!(mirror.ignore_robots, cloned.ignore_robots);
         assert_eq!(mirror.download_external, cloned.download_external);
     }

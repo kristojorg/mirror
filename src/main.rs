@@ -16,7 +16,6 @@ async fn main() -> Result<()> {
         &args.url,
         &args.output_dir,
         args.max_depth,
-        args.max_concurrent,
         !args.respect_robots, // ignore_robots is the inverse of respect_robots
         true,                 // download_external is always true to ensure no 404s
         args.only_resources.clone(),
@@ -95,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_args_with_depth_and_concurrent() {
+    fn test_parse_args_with_depth() {
         let args = vec![
             "website-mirror".to_string(),
             "https://example.com".to_string(),
@@ -103,8 +102,6 @@ mod tests {
             "./output".to_string(),
             "-d".to_string(),
             "5".to_string(),
-            "-c".to_string(),
-            "20".to_string(),
         ];
 
         let result = MirrorCommand::try_parse_from(args);
@@ -114,7 +111,6 @@ mod tests {
         assert_eq!(cmd.url, "https://example.com");
         assert_eq!(cmd.output_dir.to_string_lossy(), "./output");
         assert_eq!(cmd.max_depth, 5);
-        assert_eq!(cmd.max_concurrent, 20);
     }
 
     #[test]
@@ -172,21 +168,6 @@ mod tests {
         let args = vec![
             "website-mirror".to_string(),
             "https://example.com".to_string(),
-        ];
-
-        let result = MirrorCommand::try_parse_from(args);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_args_invalid_concurrent() {
-        let args = vec![
-            "website-mirror".to_string(),
-            "https://example.com".to_string(),
-            "-o".to_string(),
-            "./output".to_string(),
-            "-c".to_string(),
-            "0".to_string(),
         ];
 
         let result = MirrorCommand::try_parse_from(args);

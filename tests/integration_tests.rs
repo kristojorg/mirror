@@ -14,7 +14,6 @@ fn test_basic_mirror_setup() {
         "https://example.com",
         temp_dir.path(),
         3,
-        10,
         false,
         false,
         None,
@@ -25,7 +24,6 @@ fn test_basic_mirror_setup() {
 
     assert_eq!(mirror.base_url.as_str(), "https://example.com");
     assert_eq!(mirror.max_depth, 3);
-    assert_eq!(mirror.max_concurrent, 10);
 }
 
 #[test]
@@ -108,7 +106,6 @@ fn test_resource_type_filtering() {
         "https://example.com",
         temp_dir.path(),
         3,
-        10,
         false,
         false,
         None,
@@ -127,11 +124,11 @@ fn test_resource_type_filtering() {
         "https://example.com",
         temp_dir.path(),
         3,
-        10,
         false,
         false,
         Some(vec!["images".to_string()]),
         true, // no_proxy
+        None, // ignore_patterns
     )
     .unwrap();
 
@@ -145,11 +142,11 @@ fn test_resource_type_filtering() {
         "https://example.com",
         temp_dir.path(),
         3,
-        10,
         false,
         false,
         Some(vec!["css".to_string(), "js".to_string()]),
         true, // no_proxy
+        None, // ignore_patterns
     )
     .unwrap();
 
@@ -167,16 +164,15 @@ fn test_full_mirror_options() {
         "https://example.com",
         temp_dir.path(),
         100,  // max_depth
-        50,   // max_concurrent
         true, // ignore_robots
         true, // download_external
         None,
         true, // no_proxy
+        None, // ignore_patterns
     )
     .unwrap();
 
     assert_eq!(mirror.max_depth, 100);
-    assert_eq!(mirror.max_concurrent, 50);
     assert!(mirror.ignore_robots);
     assert!(mirror.download_external);
 }
