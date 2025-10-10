@@ -92,23 +92,22 @@ impl HtmlRewriter {
         result
     }
 
-    /// Create relative paths for better portability
-    /// Converts absolute local paths to relative paths from the HTML file location
-    pub fn make_paths_relative(
-        &self,
-        html_content: &str,
-        html_file_path: &str,
-        url_mappings: &HashMap<String, String>,
-    ) -> String {
-        // Calculate relative paths
-        let mut relative_mappings = HashMap::new();
-        for (original_url, local_path) in url_mappings {
-            let relative = calculate_relative_path(html_file_path, local_path);
-            relative_mappings.insert(original_url.clone(), relative);
+    /// Remove specific base tag HTML strings from content
+    ///
+    /// # Arguments
+    /// * `html_content` - The HTML content to process
+    /// * `base_tag_htmls` - List of exact base tag HTML strings to remove
+    ///
+    /// # Returns
+    /// The HTML content with specified base tags removed
+    pub fn remove_base_tags(&self, html_content: &str, base_tag_htmls: &[String]) -> String {
+        let mut result = html_content.to_string();
+
+        for base_html in base_tag_htmls {
+            result = result.replace(base_html, "");
         }
 
-        // Use the regular rewrite with relative paths
-        self.rewrite_urls(html_content, &relative_mappings)
+        result
     }
 }
 

@@ -159,6 +159,15 @@ impl HtmlParser {
         Ok(Self { base_url, document })
     }
 
+    /// Get all base tag HTML strings if present
+    /// Returns the exact HTML strings of all base tags for removal
+    pub fn get_base_tag_htmls(&self) -> Vec<String> {
+        self.document
+            .find(Name("base"))
+            .map(|node| node.html())
+            .collect()
+    }
+
     /// Extract all resources from HTML content
     pub fn extract_resources(&self) -> Result<Vec<ResourceLink>> {
         let mut resources = Vec::new();

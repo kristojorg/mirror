@@ -421,7 +421,6 @@ impl WebsiteMirror {
                     &base_url,
                     priority,
                     resource_type,
-                    &self.only_resources,
                     self.convert_to_webp,
                     &run_logger,
                     &ignore_patterns,
@@ -476,17 +475,12 @@ impl WebsiteMirror {
         depth: usize,
         state: &Arc<PersistentState>,
         base_url: &str,
-        only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
         ignore_patterns: &Option<Vec<Regex>>,
         source_url: Option<String>,
     ) -> Result<ProcessResult> {
         log::debug!("📄 Processing HTML page: {}", url);
-
-        // Note: Complex resumption logic removed - PersistentState handles all tracking
-        // and deduplication. No need to check files on disk or reconstruct URLs.
-        let url_mapper = UrlMapper::new(convert_to_webp)?;
 
         // Download the HTML page
         log::debug!("📥 Downloading HTML page: {}", url);
@@ -549,195 +543,65 @@ impl WebsiteMirror {
         let page_html_parser = HtmlParser::new(url, &html_content)?;
         let html_rewriter = HtmlRewriter::new();
 
-        // Extract resources from HTML and process them
+        // Extract resources from HTML
         let resources = page_html_parser.extract_resources()?;
+
+        // Get base tag HTML strings for removal (after parsing, before rewriting)
+        let base_tag_htmls = page_html_parser.get_base_tag_htmls();
+
+        // Phase 1: Build url_mappings upfront (original_url -> absolute_url)
+        // This maps ALL URLs to their absolute forms for HTML normalization
         let mut url_mappings = HashMap::new();
-
-        // Helper function to check if a resource type should be processed
-        let should_process_resource_type = |resource_type: &ResourceType| -> bool {
-            if let Some(ref only_resources) = only_resources {
-                let type_str = match resource_type {
-                    ResourceType::Image => "images",
-                    ResourceType::CSS => "css",
-                    ResourceType::JavaScript => "js",
-                    ResourceType::Link => "html",
-                    ResourceType::Other => "other",
-                };
-                only_resources.iter().any(|r| r.to_lowercase() == type_str)
-            } else {
-                true
-            }
-        };
-
-        // Categorize resources by priority
-        let mut critical_resources = Vec::new(); // CSS/JS
-        let mut high_resources = Vec::new(); // HTML links
-        let mut normal_resources = Vec::new(); // Images/other
-
         for resource in &resources {
-            let priority = match resource.resource_type {
-                ResourceType::CSS | ResourceType::JavaScript => DownloadPriority::Critical,
-                ResourceType::Link => DownloadPriority::High,
-                ResourceType::Image | ResourceType::Other => DownloadPriority::Normal,
-            };
-
-            let should_download = match resource.resource_type {
-                ResourceType::Image | ResourceType::CSS | ResourceType::JavaScript => {
-                    should_process_resource_type(&resource.resource_type)
-                }
-                ResourceType::Link => {
-                    resource.resolved.starts_with(base_url)
-                        && should_process_resource_type(&resource.resource_type)
-                }
-                ResourceType::Other => {
-                    resource.resolved.starts_with(base_url)
-                        && should_process_resource_type(&resource.resource_type)
-                }
-            };
-
-            if should_download {
-                match priority {
-                    DownloadPriority::Critical => critical_resources.push(resource.clone()),
-                    DownloadPriority::High => high_resources.push(resource.clone()),
-                    DownloadPriority::Normal => normal_resources.push(resource.clone()),
-                }
-            } else if !resource.resolved.starts_with(base_url) {
-                match resource.resource_type {
-                    ResourceType::Link => {
-                        // Don't log skipped external pages - too noisy
-                    }
-                    _ => {}
-                }
-            } else if !should_process_resource_type(&resource.resource_type) {
-                // Don't log filtered resources - too noisy
-            }
+            url_mappings.insert(resource.original_url.clone(), resource.resolved.clone());
         }
 
-        // Don't log resource discovery - too noisy
-
-        // Download critical resources (CSS/JS)
-        for resource in &critical_resources {
-            if let Err(_e) = Self::download_resource(
-                client,
-                file_manager,
-                &url_mapper,
-                &resource.resolved,
-                &resource.resource_type,
-                state,
-                convert_to_webp,
-                run_logger,
-                Some(url.to_string()), // Found on current HTML page
-            )
-            .await
-            {
-                // Error already logged in download_resource
-            } else {
-                // Map original URL to local path for HTML rewriting
-                if let Ok(local_path) =
-                    url_mapper.url_to_local_path(&resource.resolved, &resource.resource_type)
-                {
-                    // Calculate relative path from current HTML to resource
-                    if let Ok(current_html_path) =
-                        url_mapper.url_to_local_path(url, &ResourceType::Link)
-                    {
-                        let relative_path = Self::calculate_relative_path(
-                            &current_html_path.to_string_lossy(),
-                            &local_path.to_string_lossy(),
-                        );
-                        url_mappings.insert(resource.original_url.clone(), relative_path);
-                    }
-                }
-            }
-        }
-
-        // Process HTML links - add to mappings AND queue for crawling
-        for resource in &high_resources {
-            // Skip if URL matches ignore pattern
-            if let Some(ref patterns) = ignore_patterns {
-                let mut should_skip = false;
-                for pattern in patterns {
-                    if pattern.is_match(&resource.resolved) {
-                        log::debug!("Ignoring URL (matches pattern): {}", resource.resolved);
-                        should_skip = true;
-                        break;
-                    }
-                }
-                if should_skip {
-                    state.mark_ignored(
-                        &resource.resolved,
-                        Some(&resource.resource_type),
-                        "Matched ignore pattern",
-                        Some(url.to_string()),
-                    );
+        // Phase 1: Queue HTML links for crawling (don't download other resources)
+        for resource in &resources {
+            // Only process HTML links for crawling
+            if resource.resource_type == ResourceType::Link {
+                // Only queue links from same domain
+                if !resource.resolved.starts_with(base_url) {
                     continue;
                 }
-            }
 
-            // First, add to url_mappings so links get rewritten
-            if resource.resolved.starts_with(base_url) {
-                if let Ok(local_path) =
-                    url_mapper.url_to_local_path(&resource.resolved, &ResourceType::Link)
-                {
-                    if let Ok(current_html_path) =
-                        url_mapper.url_to_local_path(url, &ResourceType::Link)
-                    {
-                        let relative_path = Self::calculate_relative_path(
-                            &current_html_path.to_string_lossy(),
-                            &local_path.to_string_lossy(),
+                // Skip if URL matches ignore pattern
+                if let Some(ref patterns) = ignore_patterns {
+                    let mut should_skip = false;
+                    for pattern in patterns {
+                        if pattern.is_match(&resource.resolved) {
+                            log::debug!("Ignoring URL (matches pattern): {}", resource.resolved);
+                            should_skip = true;
+                            break;
+                        }
+                    }
+                    if should_skip {
+                        state.mark_ignored(
+                            &resource.resolved,
+                            Some(&resource.resource_type),
+                            "Matched ignore pattern",
+                            Some(url.to_string()),
                         );
-                        url_mappings.insert(resource.original_url.clone(), relative_path);
+                        continue;
                     }
                 }
-            }
 
-            // Then queue for crawling as before
-            // PersistentState enqueue handles deduplication internally
-            state.enqueue(DownloadTask {
-                url: resource.resolved.clone(),
-                depth: depth + 1,
-                priority: DownloadPriority::High,
-                resource_type: Some(resource.resource_type.clone()),
-                source_url: Some(url.to_string()), // Found on current page
-            });
-        }
-
-        // Download normal priority resources (images, etc.)
-        for resource in &normal_resources {
-            if let Err(_e) = Self::download_resource(
-                client,
-                file_manager,
-                &url_mapper,
-                &resource.resolved,
-                &resource.resource_type,
-                state,
-                convert_to_webp,
-                run_logger,
-                Some(url.to_string()), // Found on current HTML page
-            )
-            .await
-            {
-                // Error already logged in download_resource
-            } else {
-                // Map original URL to local path for HTML rewriting
-                if let Ok(local_path) =
-                    url_mapper.url_to_local_path(&resource.resolved, &resource.resource_type)
-                {
-                    // Calculate relative path from current HTML to resource
-                    if let Ok(current_html_path) =
-                        url_mapper.url_to_local_path(url, &ResourceType::Link)
-                    {
-                        let relative_path = Self::calculate_relative_path(
-                            &current_html_path.to_string_lossy(),
-                            &local_path.to_string_lossy(),
-                        );
-                        url_mappings.insert(resource.original_url.clone(), relative_path);
-                    }
-                }
+                // Queue for crawling
+                state.enqueue(DownloadTask {
+                    url: resource.resolved.clone(),
+                    depth: depth + 1,
+                    priority: DownloadPriority::High,
+                    resource_type: Some(resource.resource_type.clone()),
+                    source_url: Some(url.to_string()),
+                });
             }
         }
 
-        // Apply URL replacements using HtmlRewriter
+        // Phase 1: Normalize HTML
+        // 1. Replace URLs with absolute forms
         let mut html_content_updated = html_rewriter.rewrite_urls(&html_content, &url_mappings);
+        // 2. Remove base tags
+        html_content_updated = html_rewriter.remove_base_tags(&html_content_updated, &base_tag_htmls);
 
         // Additional comprehensive WebP extension replacement for any remaining image references
         if convert_to_webp {
@@ -745,7 +609,8 @@ impl WebsiteMirror {
                 Self::perform_comprehensive_webp_replacement(&html_content_updated);
         }
 
-        // Save the updated HTML with local paths for resources
+        // Save the updated HTML
+        let url_mapper = UrlMapper::new(convert_to_webp)?;
         let local_html_path = url_mapper.url_to_local_path(url, &ResourceType::Link)?;
         let _saved_path =
             file_manager.save_file(&local_html_path, html_content_updated.as_bytes())?;
@@ -904,7 +769,6 @@ impl WebsiteMirror {
         base_url: &str,
         priority: DownloadPriority,
         resource_type: Option<ResourceType>,
-        only_resources: &Option<Vec<String>>,
         convert_to_webp: bool,
         run_logger: &Arc<RunLogger>,
         ignore_patterns: &Option<Vec<Regex>>,
@@ -932,7 +796,6 @@ impl WebsiteMirror {
                     depth,
                     state,
                     base_url,
-                    only_resources,
                     convert_to_webp,
                     run_logger,
                     ignore_patterns,
